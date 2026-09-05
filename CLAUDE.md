@@ -33,15 +33,18 @@ windows/
 │       ├── qga.py           # Out-of-band QEMU Guest Agent JSON-RPC over UNIX domain socket
 │       ├── registry.py      # RegistryController (get, set, delete registry keys and values)
 │       ├── services.py      # ServiceController & ServiceInfo (list, start, stop, restart services)
+│       ├── snapshot.py      # SnapshotController & SnapshotInfo (create, revert, list, and fork snapshots)
 │       └── unattend.py      # Autounattend.xml generation, setup.cmd, and secondary ISO builder
-├── tests/                   # Mocked, ultra-fast unit test suite (50+ tests)
+├── tests/                   # Mocked, ultra-fast unit test suite (60+ tests)
 │   ├── test_abstractions.py # Process, Registry, Service, and random output_disk tests
 │   ├── test_advanced.py     # Cache, ISO resolution, and edge case tests
 │   ├── test_cache.py        # ISO and image overlay caching verification
 │   ├── test_console.py      # VNC launcher, screenshot, and monitor tests
 │   ├── test_file_ops.py     # RemotePath directory upload, download, and exist_policy tests
 │   ├── test_machine_debug.py # machine.debug() and machine.run() tests
+│   ├── test_oop_interfaces.py # ISO, Image, Machine canonical interface tests
 │   ├── test_qga.py          # QGA JSON-RPC protocol and file streaming tests
+│   ├── test_snapshots.py    # SnapshotController lifecycle and machine forking tests
 │   ├── test_windows.py      # Core workflow unit tests
 │   └── test_working_machine.py # Machine instance creation tests
 ├── tests_e2e/               # Optional live end-to-end integration tests
@@ -49,7 +52,8 @@ windows/
 │   ├── demo_workflow.py     # Comprehensive runnable workflow example
 │   ├── ntoseye_debugging.py # ntoseye WinDbg-compatible kernel debugging example
 │   ├── remote_file_ops.py   # Path-style file & directory transfers example
-│   └── monitor_debugging.py # QEMU monitor debugger & HMP scripting example
+│   ├── monitor_debugging.py # QEMU monitor debugger & HMP scripting example
+│   └── snapshot_management.py # Snapshot management and machine forking example
 ├── pyproject.toml           # Project metadata, dependencies, ruff & ty configuration
 ├── README.md                # User-facing guide and quickstart
 └── CLAUDE.md                # Complete developer and architecture guide
@@ -112,15 +116,42 @@ uv run python3 examples/demo_workflow.py
     - Automatically provisions a clean Windows installation in a QEMU VM.
     - Caches the installed disk in `~/.cache/windows/images/`.
     - Creates a lightweight QEMU overlay disk (`.qcow2`) pointing to the base image. If `output_disk` is omitted, automatically generates a unique randomized filename (`windows_overlay_<uuid>.qcow2`).
+  - **Offline Disk Analysis & File Operations (`image.file` / `ImagePath`)**:
+    - **`image.file` / `ImagePath`**: Path-like offline filesystem interface mirroring `machine.file`:
+      ```python
+      hosts = image.file / r"C:\Windows\System32\drivers\etc\hosts"
+      print(hosts.exists(), hosts.is_file(), hosts.read_text())
+
+      note = image.file / r"C:\Users\Public\offline_script.bat"
+      note.write_text("@echo off\r\necho Injected offline")
+
+      for child in (image.file / r"C:\Windows").iterdir():
+          print(child.name, child.is_dir())
+
+      with image.file as fs:
+          (fs / r"C:\batch_file.txt").write_text("Fast batch writes")
+      ```
+    - **`image.partitions()`**: Inspects MBR/GPT partition tables (offset, size, type, bootable status).
+    - **`image.file.partition(n)`**: Scopes offline file operations to a specific partition number.
+    - **`with image.mount(writable=True) as disk:`**: Low-level FUSE mount context manager for partition access.
 
 ### 4. `windows.machine` & `Machine`
 - **`Machine(image, ram_mb=4096, cpus=4, headless=True, ...)`**: Instantiates a runnable VM controller from an `Image` or disk path.
-- **`machine.power.on()` / `.off()` / `.restart()`**: Manages QEMU process lifecycle.
+- **`machine.power.on()` / `.off()` / `.restart()` / `.pause()` / `.resume()` / `.kill()`**: Manages QEMU process and execution state.
+- **`machine.pause()` / `machine.resume()` / `machine.kill()`**: Top-level convenience methods for execution pause/unpause and forceful termination.
+- **`machine.fork(snapshot_name=None, output_disk=None, run=True, ...)`**: Creates a snapshot of current state and runs a new concurrent machine from it.
 - **`machine.run(timeout=180)`**: Powers on VM, waits for QGA readiness, and runs initial sanity check.
 - **`machine.debug(backend="ntoseye" | "qemu_monitor", gdb_port=1234, ...)`**:
   - Supports QEMU monitor scripting and `ntoseye` WinDbg-compatible kernel debugging over QEMU GDB stub.
+- **`with machine.record("session.mp4", fps=10):`**: Convenience alias for `machine.console.record()`.
 
-### 5. `windows.processes` (`machine.processes`)
+### 5. `windows.console` (`machine.console`)
+`machine.console` manages VNC display viewer processes, screenshot capture, and video recording:
+- **`with machine.console.record(output_path="demo.mp4", fps=10) as rec:`**: Context manager for recording video of the VM console (supports `.mp4`, `.webm`, `.gif`, `.mkv`, `.avi`).
+- **`machine.console.screenshot(output_path="screen.png")`**: Captures a live screen snapshot.
+- **`machine.console.open()` / `machine.console.close()`**: Launches or closes native VNC viewer client (e.g. `vncviewer`, `tigervnc`, `remmina`).
+
+### 6. `windows.processes` (`machine.processes`)
 - `machine.processes.list()`: Returns `list[ProcessInfo]` (PID, ProcessName, CPU, WorkingSet MB, Path).
 - `machine.processes.get(name_or_pid)`: Retrieve specific process details.
 - `machine.processes.kill(name_or_pid, force=True)`: Terminate process by PID or name.
@@ -147,3 +178,22 @@ content = remote_file.read_text()
 remote_dir.upload(local_dir_path, exist_policy="overwrite")
 remote_dir.download_dir(local_target_dir, exist_policy="overwrite")
 ```
+
+### 9. `windows.snapshot` (`machine.snapshot`)
+`machine.snapshot` provides comprehensive virtual machine / disk snapshot management, graph hierarchy traversal, and VM forking:
+- `machine.snapshot.create(name)`: Takes a snapshot (live with RAM + CPU state via QEMU monitor if running, or internal disk state if stopped). Returns a `Snapshot` node instance.
+- `machine.snapshot.list()`: Returns a `SnapshotList` object containing `Snapshot` nodes.
+  - `repr(machine.snapshot.list())` / `str(...)`: Automatically renders a formatted ASCII tree drawing.
+  - Dict & int indexing: `snapshots["snap_name"]`, `snapshots[0]`.
+  - Hierarchy traversal & chaining: `machine.snapshot.list().parent.parent.revert()`.
+- `Snapshot` node:
+  - `snap.parent`: Returns parent `Snapshot` node in the tree hierarchy (or `None`).
+  - `snap.children`: Returns list of child `Snapshot` nodes.
+  - `snap.revert()`: Restores VM memory and disk state directly to this snapshot.
+  - `snap.delete()`: Deletes this snapshot.
+  - `snap.fork()`: Forks a new independent `Machine` from this snapshot.
+- `machine.snapshot.revert(name_or_id)`: Rollback VM to a previously saved snapshot.
+- `machine.snapshot.tree()`: Returns an ASCII tree view representation of all snapshots.
+- `machine.snapshot.get(name)` / `machine.snapshot.exists(name)`: Query snapshot metadata.
+- `machine.snapshot.delete(name)`: Deletes a snapshot.
+- `machine.snapshot.fork(name=None, output_disk=None, run=False, ...)`: Extracts snapshot state to a new standalone disk and returns a new runnable `Machine` instance.

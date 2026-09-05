@@ -12,6 +12,10 @@ Automated, hands-free Windows QEMU virtual machine provisioning, instant base im
   - **`machine.processes`**: List, inspect, and kill running Windows processes (`PID`, `Name`, `CPU`, `WorkingSet MB`).
   - **`machine.registry`**: Query, set, and delete keys and values across `HKLM`, `HKCU`, etc.
   - **`machine.services`**: Inspect, start, stop, restart, and configure startup types for Windows services.
+- 📸 **Live & Offline Snapshots (`machine.snapshot`)**:
+  - Take live snapshots (`savevm`) saving RAM + disk state, or offline disk snapshots.
+  - Instant rollback to any snapshot checkpoint (`machine.snapshot.revert()`).
+  - **Fork Machine from Snapshot**: Extract any snapshot into an independent standalone VM (`machine.snapshot.fork()`).
 - 📂 **Pythonic `pathlib.Path`-Style File Transfer (`RemotePath`)**:
   - Manipulate remote guest paths with familiar syntax (`machine.file.path(...)` or `machine.file / "C:\\path"`).
   - Direct text/byte reading and writing (`read_text()`, `write_text()`, `read_bytes()`, `write_bytes()`) via QGA file streaming.
@@ -93,6 +97,40 @@ remote_dir.upload(local_dir, exist_policy="overwrite")
 
 # 7. Clean shutdown
 machine.power.off()
+```
+
+---
+
+## 💾 Offline Disk & Filesystem Analysis (`image.file`)
+
+Inspect partition tables and read or write files directly in offline Windows images using the same path-like interface as `machine.file`:
+
+```python
+from windows import Image
+
+image = Image("windows.qcow2")
+
+# 1. Inspect partitions
+for part in image.partitions():
+    print(f"Partition #{part.index}: {part.type_name}, {part.size / (1024**3):.1f} GB")
+
+# 2. Path-like file reading & writing without booting the VM
+hosts = image.file / r"C:\Windows\System32\drivers\etc\hosts"
+if hosts.exists():
+    print("Hosts file content:\n", hosts.read_text())
+
+# 3. Inject scripts or configs directly into offline disk
+script = image.file / r"C:\Users\Public\setup.bat"
+script.write_text("@echo off\r\necho Offline Provisioned")
+
+# 4. Directory traversal
+for child in (image.file / r"C:\Windows").iterdir():
+    print(child.name, "[DIR]" if child.is_dir() else "[FILE]")
+
+# 5. High-performance batch mount context
+with image.file as fs:
+    (fs / r"C:\Users\Public\note1.txt").write_text("Batch note 1")
+    (fs / r"C:\Users\Public\note2.txt").write_text("Batch note 2")
 ```
 
 ---
