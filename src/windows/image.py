@@ -9,8 +9,16 @@ from typing import TYPE_CHECKING
 from tqdm import tqdm
 
 from windows.console import ConsoleController
+from windows.disk import (
+    DiskController,
+    ImageFileController,
+    ImagePath,
+    MountedPartition,
+    PartitionInfo,
+)
 from windows.iso import (
     get_image_cache_dir,
+    list_cached_images,
 )
 from windows.qemu import (
     QEMUProcessManager,
@@ -80,6 +88,62 @@ class Image:
 
     def __hash__(self) -> int:
         return hash(self.disk_path)
+
+    @property
+    def file(self) -> ImageFileController:
+        """Path-like offline file controller for this disk image (e.g. `image.file / 'C:\\Windows'`)."""
+        if not hasattr(self, "_file_controller") or self._file_controller is None:
+            self._file_controller = ImageFileController(self)
+        return self._file_controller
+
+    def __truediv__(self, remote_path: str | Path) -> ImagePath:
+        """Support image / 'C:\\path' syntax as an alias for image.file / 'C:\\path'."""
+        return self.file / remote_path
+
+    @property
+    def disk(self) -> DiskController:
+        """Offline disk controller for analyzing partitions, listing files, and reading/writing files."""
+        if not hasattr(self, "_disk_controller") or self._disk_controller is None:
+            self._disk_controller = DiskController(self)
+        return self._disk_controller
+
+    def partitions(self) -> list[PartitionInfo]:
+        """Return all disk partitions found in this image."""
+        return self.disk.partitions()
+
+    def mount(self, partition: int | None = None, writable: bool = False) -> MountedPartition:
+        """Mount an NTFS partition from this offline disk image via FUSE.
+
+        Usage:
+            with image.mount(writable=True) as disk:
+                print(disk.list_files("Windows"))
+                disk.write_text("test.txt", "hello")
+        """
+        return self.disk.mount(partition=partition, writable=writable)
+
+    def list_files(self, path: str = "", partition: int | None = None, recursive: bool = False) -> list[str]:
+        """List files in an offline directory inside the image's Windows partition."""
+        return self.disk.list_files(path=path, partition=partition, recursive=recursive)
+
+    def read_text(self, path: str, encoding: str = "utf-8", partition: int | None = None) -> str:
+        """Read text from a file inside the offline image's Windows partition."""
+        return self.disk.read_text(path=path, encoding=encoding, partition=partition)
+
+    def read_bytes(self, path: str, partition: int | None = None) -> bytes:
+        """Read binary bytes from a file inside the offline image's Windows partition."""
+        return self.disk.read_bytes(path=path, partition=partition)
+
+    def write_text(self, path: str, text: str, encoding: str = "utf-8", partition: int | None = None) -> None:
+        """Write text into a file inside the offline image's Windows partition."""
+        self.disk.write_text(path=path, text=text, encoding=encoding, partition=partition)
+
+    def write_bytes(self, path: str, data: bytes, partition: int | None = None) -> None:
+        """Write binary data into a file inside the offline image's Windows partition."""
+        self.disk.write_bytes(path=path, data=data, partition=partition)
+
+    def file_exists(self, path: str, partition: int | None = None) -> bool:
+        """Return True if a file exists inside the offline image's Windows partition."""
+        return self.disk.exists(path=path, partition=partition)
 
     @classmethod
     def from_iso(
@@ -296,6 +360,11 @@ class Image:
                 print(f"[windows] Created QEMU overlay disk {output_disk} backing {cached_image_path}")
 
         return cls(output_disk)
+
+    @classmethod
+    def list(cls, cache_dir: str | Path | None = None) -> list["Image"]:
+        """List all cached installed Windows disk images as Image instances."""
+        return [cls(p) for p in list_cached_images(cache_dir=cache_dir)]
 
 
 def _is_valid_installed_image(path: Path) -> bool:

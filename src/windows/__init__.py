@@ -1,6 +1,13 @@
 """windows - Automated Windows QEMU VM management and guest command execution via QGA."""
 
-from windows.console import ConsoleController, ConsoleInfo
+from windows.console import ConsoleController, ConsoleInfo, ScreenRecorder
+from windows.disk import (
+    DiskController,
+    ImageFileController,
+    ImagePath,
+    MountedPartition,
+    PartitionInfo,
+)
 from windows.executor import CommandController, CommandResult
 from windows.file import FileController, RemoteFile, RemotePath
 from windows.image import Image
@@ -21,6 +28,7 @@ from windows.processes import ProcessController, ProcessInfo
 from windows.qga import QGAClient, QGAError
 from windows.registry import RegistryController
 from windows.services import ServiceController, ServiceInfo
+from windows.snapshot import Snapshot, SnapshotController, SnapshotError, SnapshotInfo, SnapshotList
 
 __all__ = [
     "ISO",
@@ -28,9 +36,14 @@ __all__ = [
     "CommandResult",
     "ConsoleController",
     "ConsoleInfo",
+    "DiskController",
     "FileController",
     "Image",
+    "ImageFileController",
+    "ImagePath",
     "Machine",
+    "MountedPartition",
+    "PartitionInfo",
     "PowerController",
     "ProcessController",
     "ProcessInfo",
@@ -39,8 +52,14 @@ __all__ = [
     "RegistryController",
     "RemoteFile",
     "RemotePath",
+    "ScreenRecorder",
     "ServiceController",
     "ServiceInfo",
+    "Snapshot",
+    "SnapshotController",
+    "SnapshotError",
+    "SnapshotInfo",
+    "SnapshotList",
     "WindowsVersion",
     "clear_image_cache",
     "clear_iso_cache",

@@ -2,7 +2,7 @@
 
 import json
 import shutil
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Literal
 
 from tqdm import tqdm
@@ -46,6 +46,43 @@ class RemotePath:
     def __truediv__(self, child: str) -> "RemotePath":
         joined = f"{self.remote_path}\\{child}" if "\\" in self.remote_path else f"{self.remote_path}/{child}"
         return RemotePath(self.controller, joined)
+
+    @property
+    def name(self) -> str:
+        """The final path component."""
+        clean = self.clean_path.rstrip("\\/")
+        if not clean or clean.endswith(":"):
+            return ""
+        return PureWindowsPath(clean).name
+
+    @property
+    def stem(self) -> str:
+        """The final path component without suffix."""
+        return PureWindowsPath(self.name).stem
+
+    @property
+    def suffix(self) -> str:
+        """The path extension."""
+        return PureWindowsPath(self.name).suffix
+
+    @property
+    def parent(self) -> "RemotePath":
+        """The logical parent of the path."""
+        clean = self.clean_path.rstrip("\\/")
+        p = str(PureWindowsPath(clean).parent)
+        if clean.startswith("C:") and not p.startswith("C:"):
+            p = f"C:\\{p}".replace("C:\\.", "C:\\")
+        return RemotePath(self.controller, p)
+
+    def iterdir(self) -> list["RemotePath"]:
+        """Iterate over the files and directories in this remote guest directory."""
+        cmd = (
+            f"$items = Get-ChildItem -LiteralPath '{self.remote_path}'; "
+            f"if ($items) {{ ($items | ForEach-Object {{ $_.FullName }}) -join [Environment]::NewLine }} else {{ '' }}"
+        )
+        res = self.controller.cmd.run(cmd, auto_retry=False)
+        lines = [line.strip() for line in res.stdout.splitlines() if line.strip()]
+        return [RemotePath(self.controller, line) for line in lines]
 
     def exists(self) -> bool:
         """Check if remote path exists on guest VM."""

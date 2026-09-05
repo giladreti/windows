@@ -72,3 +72,26 @@ def test_remote_path_write_read_text():
     mock_cmd.qga.write_file.assert_called_once_with(r"C:\test.txt", b"hello from qga")
 
     assert p.read_text() == "hello from qga"
+
+
+def test_remote_path_properties_and_iterdir():
+    mock_cmd = MagicMock(spec=CommandController)
+    fc = FileController(mock_cmd)
+
+    p = fc / r"C:\Windows\System32\drivers\etc\hosts"
+    assert p.name == "hosts"
+    assert p.stem == "hosts"
+    assert p.suffix == ""
+    assert p.parent.clean_path == r"C:\Windows\System32\drivers\etc"
+
+    # Test iterdir
+    mock_cmd.run.return_value = CommandResult(
+        stdout="C:\\Windows\\System32\\cmd.exe\r\nC:\\Windows\\System32\\notepad.exe\r\n",
+        stderr="",
+        returncode=0,
+    )
+    folder = fc / r"C:\Windows\System32"
+    children = folder.iterdir()
+    assert len(children) == 2
+    assert children[0].name == "cmd.exe"
+    assert children[1].name == "notepad.exe"
