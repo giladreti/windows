@@ -4,7 +4,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from windows.console import ConsoleController
+from windows.console import ConsoleController, ScreenRecorder
 from windows.executor import CommandController, CommandResult
 from windows.file import FileController
 from windows.image import Image
@@ -12,14 +12,17 @@ from windows.processes import ProcessController
 from windows.qemu import QEMUProcessManager, build_run_qemu_cmd, find_free_port
 from windows.registry import RegistryController
 from windows.services import ServiceController
+from windows.snapshot import SnapshotController
 from windows.unattend import DEFAULT_PASSWORD, DEFAULT_USERNAME
 
 
 class PowerController:
     """Power management controller for QEMU VM."""
 
-    def __init__(self, process_manager: QEMUProcessManager):
+    def __init__(self, process_manager: QEMUProcessManager, console: ConsoleController | None = None):
         self._manager = process_manager
+        self._console = console
+        self._is_paused = False
 
     def on(self) -> None:
         """Power on the virtual machine."""
@@ -28,6 +31,7 @@ class PowerController:
     def start(self) -> None:
         """Start the virtual machine process."""
         self._manager.start()
+        self._is_paused = False
 
     def off(self) -> None:
         """Power off the virtual machine."""
@@ -36,6 +40,28 @@ class PowerController:
     def stop(self, timeout: float = 10.0) -> None:
         """Stop the virtual machine process."""
         self._manager.stop(timeout=timeout)
+        self._is_paused = False
+
+    def kill(self) -> None:
+        """Immediately and forcefully kill the virtual machine process (SIGKILL)."""
+        self._manager.kill()
+        self._is_paused = False
+
+    def pause(self) -> None:
+        """Pause VM CPU execution via QEMU monitor."""
+        if self._console and self.status == "running":
+            self._console.monitor_stop()
+        self._is_paused = True
+
+    def resume(self) -> None:
+        """Resume VM CPU execution via QEMU monitor."""
+        if self._console and self._manager.is_running():
+            self._console.monitor_continue()
+        self._is_paused = False
+
+    def unpause(self) -> None:
+        """Alias for resume()."""
+        self.resume()
 
     def restart(self) -> None:
         """Restart the virtual machine."""
@@ -45,8 +71,13 @@ class PowerController:
 
     @property
     def status(self) -> str:
-        """Return VM power status ('running' or 'stopped')."""
-        return "running" if self._manager.is_running() else "stopped"
+        """Return VM power status ('running', 'paused', or 'stopped')."""
+        if not self._manager.is_running():
+            self._is_paused = False
+            return "stopped"
+        if self._is_paused:
+            return "paused"
+        return "running"
 
 
 class Machine:
@@ -93,13 +124,13 @@ class Machine:
         )
         self._process_manager = QEMUProcessManager(cmd)
 
-        self.power = PowerController(self._process_manager)
         self.console = ConsoleController(
             host="127.0.0.1",
             port=actual_vnc_port,
             display_index=actual_vnc_display,
             monitor_socket_path=self.monitor_socket_path,
         )
+        self.power = PowerController(self._process_manager, console=self.console)
         self.command = CommandController(
             qga_socket_path=self.qga_socket_path,
         )
@@ -107,6 +138,72 @@ class Machine:
         self.processes = ProcessController(self.command)
         self.registry = RegistryController(self.command)
         self.services = ServiceController(self.command)
+        self.snapshot = SnapshotController(self)
+
+    def pause(self) -> None:
+        """Pause VM CPU execution."""
+        self.power.pause()
+
+    def resume(self) -> None:
+        """Resume VM CPU execution."""
+        self.power.resume()
+
+    def unpause(self) -> None:
+        """Alias for resume()."""
+        self.power.resume()
+
+    def kill(self) -> None:
+        """Immediately and forcefully kill the QEMU process (SIGKILL)."""
+        self.power.kill()
+
+    def record(
+        self,
+        output_path: "str | Path" = "recording.mp4",
+        fps: float = 10.0,
+    ) -> ScreenRecorder:
+        """Record a video of the machine screen console (convenience alias for machine.console.record).
+
+        Usage:
+            with machine.record("session.mp4", fps=10):
+                # Run guest operations...
+        """
+        return self.console.record(output_path=output_path, fps=fps)
+
+    def fork(
+        self,
+        snapshot_name: str | None = None,
+        output_disk: "str | Path | None" = None,
+        run: bool = True,
+        **machine_kwargs,
+    ) -> "Machine":
+        """Fork this virtual machine from a snapshot, creating and running a new machine.
+
+        Creates a snapshot of the current VM state (if not already existing) and instantiates
+        a new independent Machine from it, allowing multiple machines to run concurrently from the same base state.
+
+        Args:
+            snapshot_name: Optional name for the base snapshot. If None, auto-generates a name.
+            output_disk: Optional disk path for the new forked machine.
+            run: If True, powers on the newly forked machine immediately.
+            **machine_kwargs: Overrides for the new machine (e.g. ram_mb, cpus, headless, etc.).
+
+        Returns:
+            A new `Machine` instance running from the snapshot.
+        """
+        import uuid
+
+        if snapshot_name is None:
+            snapshot_name = f"fork_snap_{uuid.uuid4().hex[:8]}"
+
+        if not self.snapshot.exists(snapshot_name):
+            self.snapshot.create(snapshot_name)
+
+        return self.snapshot.fork(
+            name_or_id=snapshot_name,
+            output_disk=output_disk,
+            run=run,
+            **machine_kwargs,
+        )
 
     def run(self, timeout: int = 180) -> CommandResult:
         """Power on the machine and wait until the guest QGA interface is ready."""
