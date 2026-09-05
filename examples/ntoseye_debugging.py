@@ -9,17 +9,16 @@ Install ntoseye:
 
 import importlib
 
-import windows
-from windows.iso import WindowsVersion
+from windows import ISO, Image, Machine, WindowsVersion
 
 
 def main():
     print("=== Windows Kernel Debugging with ntoseye ===")
 
     # 1. Resolve ISO and prepare VM overlay disk
-    iso = windows.get_iso(WindowsVersion.WIN10_22H2)
-    image = windows.create_image_from_iso(iso, output_disk="my_vm_overlay.qcow2", use_cache=True)
-    machine = windows.create_machine_from_image(image)
+    iso = ISO.from_version(WindowsVersion.WIN10_22H2)
+    image = Image.from_iso(iso, output_disk="my_vm_overlay.qcow2", use_cache=True)
+    machine = Machine(image)
 
     # 2. Start VM with QEMU GDB stub active on port 1234
     # Note: We let Windows boot (pause_at_boot=False) so ntoskrnl.exe is loaded into kernel memory.

@@ -1,5 +1,3 @@
-"""ISO resolution, caching, and downloading for Windows QEMU VM setups."""
-
 import hashlib
 import os
 from enum import StrEnum
@@ -190,29 +188,110 @@ def create_dummy_iso(target_path: Path) -> Path:
     return target_path
 
 
-def get_iso(
-    iso_path_or_version: str | Path | WindowsVersion,
-    cache_dir: str | Path | None = None,
-    show_progress: bool = True,
-) -> Path:
-    """Fetch/download and return the local Path to a Windows ISO file.
+class ISO:
+    """Represents a Windows installation ISO image."""
 
-    Examples:
-        iso = get_iso(WindowsVersion.WIN10_22H2)
-        iso = get_iso("win11_25h2")
-        iso = get_iso("/path/to/local.iso")
-    """
-    return resolve_iso(iso_path_or_version, cache_dir=cache_dir, show_progress=show_progress)
+    def __init__(self, path: "ISO | str | Path | os.PathLike"):
+        if isinstance(path, ISO):
+            self.path = path.path
+        else:
+            self.path = Path(path).resolve()
+        if not self.path.exists():
+            raise FileNotFoundError(f"Specified local ISO file does not exist: {self.path}")
+
+    @property
+    def name(self) -> str:
+        """Return the filename of the ISO file."""
+        return self.path.name
+
+    @property
+    def stem(self) -> str:
+        """Return the stem (filename without extension) of the ISO file."""
+        return self.path.stem
+
+    def exists(self) -> bool:
+        """Return True if the ISO file exists."""
+        return self.path.exists()
+
+    def stat(self) -> os.stat_result:
+        """Return the stat result for the ISO file."""
+        return self.path.stat()
+
+    def __fspath__(self) -> str:
+        return str(self.path)
+
+    def __str__(self) -> str:
+        return str(self.path)
+
+    def __repr__(self) -> str:
+        return f"<ISO path={str(self.path)!r}>"
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, ISO):
+            return self.path == other.path
+        if isinstance(other, (str, Path, os.PathLike)):
+            return self.path == Path(other).resolve()
+        return False
+
+    def __hash__(self) -> int:
+        return hash(self.path)
+
+    @classmethod
+    def from_version(
+        cls,
+        version: WindowsVersion | str,
+        cache_dir: str | Path | None = None,
+        show_progress: bool = True,
+    ) -> "ISO":
+        """Fetch/download and return an ISO instance for the specified Windows version.
+
+        Args:
+            version: WindowsVersion enum member or version string alias (e.g. WindowsVersion.WIN10_22H2, "win11_24h2", "23h2").
+            cache_dir: Optional custom ISO cache directory path.
+            show_progress: Whether to display download progress bar.
+
+        Returns:
+            An ISO instance pointing to the cached/downloaded ISO file.
+        """
+        resolved_path = resolve_iso(version, cache_dir=cache_dir, show_progress=show_progress)
+        return cls(resolved_path)
+
+    @classmethod
+    def from_url(
+        cls,
+        url: str,
+        cache_dir: str | Path | None = None,
+        show_progress: bool = True,
+    ) -> "ISO":
+        """Download and cache an ISO from a direct HTTP/HTTPS URL and return an ISO instance."""
+        resolved_path = resolve_iso(url, cache_dir=cache_dir, show_progress=show_progress)
+        return cls(resolved_path)
+
+    @classmethod
+    def resolve(
+        cls,
+        iso_path_or_version: "ISO | str | Path | WindowsVersion",
+        cache_dir: str | Path | None = None,
+        show_progress: bool = True,
+    ) -> "ISO":
+        """Resolve any ISO identifier (ISO instance, version, URL, or local path) to an ISO object."""
+        if isinstance(iso_path_or_version, ISO):
+            if not iso_path_or_version.exists():
+                raise FileNotFoundError(f"Specified local ISO file does not exist: {iso_path_or_version.path}")
+            return iso_path_or_version
+        resolved_path = resolve_iso(iso_path_or_version, cache_dir=cache_dir, show_progress=show_progress)
+        return cls(resolved_path)
 
 
 def resolve_iso(
-    iso_path_or_version: str | Path | WindowsVersion,
+    iso_path_or_version: "ISO | str | Path | WindowsVersion",
     cache_dir: str | Path | None = None,
     show_progress: bool = True,
 ) -> Path:
     """Resolve an ISO parameter to a valid local Path.
 
     Accepts:
+      - ISO instance
       - Path object to a local ISO file
       - String path to a local ISO file
       - WindowsVersion Enum (e.g. WindowsVersion.WIN10_22H2, WindowsVersion.WIN11_24H2)
@@ -221,6 +300,9 @@ def resolve_iso(
 
     If given a version alias or URL, checks local cache before downloading.
     """
+    if isinstance(iso_path_or_version, ISO):
+        iso_path_or_version = iso_path_or_version.path
+
     if isinstance(iso_path_or_version, Path):
         path = iso_path_or_version.resolve()
         if not path.exists():

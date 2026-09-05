@@ -4,7 +4,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from windows.executor import CommandController, CommandResult
-from windows.image import Image, create_image_from_iso
+from windows.image import Image
 from windows.machine import Machine
 from windows.processes import ProcessController, ProcessInfo
 from windows.registry import RegistryController
@@ -143,7 +143,7 @@ def test_create_image_random_output_disk(tmp_path):
         patch("windows.image._is_valid_installed_image", return_value=True),
         patch("windows.image.create_qcow2_overlay", side_effect=fake_overlay) as mock_overlay,
     ):
-        img = create_image_from_iso(iso_path=iso_file, output_disk=None, use_cache=True)
+        img = Image.from_iso(iso=iso_file, output_disk=None, use_cache=True)
         assert isinstance(img, Image)
         assert "windows_overlay_" in img.disk_path.name
         mock_overlay.assert_called_once()

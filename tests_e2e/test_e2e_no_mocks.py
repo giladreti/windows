@@ -5,7 +5,7 @@ It runs real QEMU, real ISO resolution, real QCOW2 disks, real power control,
 real WinRM network command execution, and real file transfers.
 """
 
-import windows
+from windows import ISO, Image, Machine, RemoteFile, WindowsVersion
 
 
 def test_unmocked_e2e_windows_workflow(tmp_path):
@@ -14,11 +14,11 @@ def test_unmocked_e2e_windows_workflow(tmp_path):
     disk_path = tmp_path / "unmocked_windows_vm.qcow2"
 
     print("\n[E2E Un-mocked] Fetching ISO for WIN11_25H2...")
-    iso = windows.get_iso(windows.WindowsVersion.WIN11_25H2)
+    iso = ISO.from_version(WindowsVersion.WIN11_25H2)
 
     print(f"[E2E Un-mocked] Creating image from '{iso}'...")
-    image = windows.create_image_from_iso(
-        iso_path=iso,
+    image = Image.from_iso(
+        iso=iso,
         output_disk=disk_path,
         disk_size="20G",
         ram_mb=4096,
@@ -30,7 +30,7 @@ def test_unmocked_e2e_windows_workflow(tmp_path):
 
     # 2. Instantiate Machine from real Image
     print("[E2E Un-mocked] Creating machine instance from image...")
-    machine = windows.create_machine_from_image(image, ram_mb=4096, cpus=4, headless=True)
+    machine = Machine(image, ram_mb=4096, cpus=4, headless=True)
 
     try:
         # 3. Power ON real QEMU process
@@ -47,7 +47,7 @@ def test_unmocked_e2e_windows_workflow(tmp_path):
         # 5. Download real file from guest: C:\windows\system32\ntdll.dll
         print("[E2E Un-mocked] Downloading C:\\windows\\system32\\ntdll.dll ...")
         file = machine.file.download("C:\\windows\\system32\\ntdll.dll")
-        assert isinstance(file, windows.RemoteFile)
+        assert isinstance(file, RemoteFile)
         local_ntdll = tmp_path / "downloaded_ntdll.dll"
         file.save(local_ntdll)
 

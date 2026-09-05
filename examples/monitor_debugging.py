@@ -1,16 +1,15 @@
 """Example demonstrating QEMU Monitor debugger (machine.debug) and HMP scripting."""
 
-import windows
-from windows.iso import WindowsVersion
+from windows import ISO, Image, Machine, WindowsVersion
 
 
 def main():
     print("=== QEMU Monitor Debugger Example ===")
 
     # 1. Prepare VM image
-    iso = windows.get_iso(WindowsVersion.WIN10_22H2)
-    image = windows.create_image_from_iso(iso, output_disk="my_vm_overlay2.qcow2", use_cache=True)
-    machine = windows.create_machine_from_image(image)
+    iso = ISO.from_version(WindowsVersion.WIN10_22H2)
+    image = Image.from_iso(iso, output_disk="my_vm_overlay2.qcow2", use_cache=True)
+    machine = Machine(image)
 
     # 2. Start VM stopped at boot (-S) with custom QEMU HMP monitor script
     init_debug_script = [

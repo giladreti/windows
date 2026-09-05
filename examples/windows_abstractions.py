@@ -4,8 +4,7 @@
 - machine.services: Listing services, checking status, starting/stopping, and setting startup modes
 """
 
-import windows
-from windows.iso import WindowsVersion
+from windows import ISO, Image, Machine, WindowsVersion
 
 
 def main():
@@ -13,10 +12,10 @@ def main():
 
     # 1. Resolve ISO & Image
     print("\n1. Resolving Windows ISO & creating thin overlay disk...")
-    iso = windows.get_iso(WindowsVersion.WIN10_22H2)
+    iso = ISO.from_version(WindowsVersion.WIN10_22H2)
     # Note: output_disk=None auto-generates a unique random overlay disk name
-    image = windows.create_image_from_iso(iso, output_disk=None, use_cache=True)
-    machine = windows.create_machine_from_image(image)
+    image = Image.from_iso(iso, output_disk=None, use_cache=True)
+    machine = Machine(image)
 
     # 2. Start VM and wait for QGA interface
     print("2. Starting VM and waiting for QGA guest interface...")

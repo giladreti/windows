@@ -3,8 +3,7 @@
 import shutil
 from pathlib import Path
 
-import windows
-from windows.iso import WindowsVersion
+from windows import ISO, Image, Machine, WindowsVersion
 
 
 def main():
@@ -12,13 +11,13 @@ def main():
 
     # 1. Fetch/download Windows ISO
     print("\n1. Resolving/fetching Windows ISO...")
-    iso = windows.get_iso(WindowsVersion.WIN10_22H2)
+    iso = ISO.from_version(WindowsVersion.WIN10_22H2)
     print(f"   ISO ready: {iso}")
 
     # 2. Provision Windows QEMU VM image
     print("\n2. Creating VM image from ISO...")
-    image = windows.create_image_from_iso(
-        iso_path=iso,
+    image = Image.from_iso(
+        iso=iso,
         output_disk="my_vm_overlay.qcow2",
         use_cache=True,
         interactive=True,
@@ -27,7 +26,7 @@ def main():
 
     # 3. Instantiate Machine from Image
     print("\n3. Creating Machine instance...")
-    machine = windows.create_machine_from_image(image)
+    machine = Machine(image)
 
     # 4. Power management - Start VM in debug mode
     print("\n4. Starting VM in debug mode using machine.debug() (QEMU monitor active)...")

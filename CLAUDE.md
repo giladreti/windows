@@ -25,7 +25,7 @@ windows/
 │       ├── console.py       # VNC console launcher, screendump, & QEMU HMP monitor client
 │       ├── executor.py      # CommandController for guest command execution via QGA
 │       ├── file.py          # FileController & RemotePath (pathlib-style remote file & directory ops)
-│       ├── image.py         # Image representation and create_image_from_iso provisioning logic
+│       ├── image.py         # Image representation and Image.from_iso provisioning logic
 │       ├── iso.py           # Windows ISO downloading, resolving, hashing, and caching
 │       ├── machine.py       # Machine instance, PowerController, machine.run(), machine.debug()
 │       ├── processes.py     # ProcessController & ProcessInfo (listing, getting, and killing processes)
@@ -63,7 +63,7 @@ The project uses `uv` for package management, virtual environments, linting, typ
 
 ### 1. Run Unit Tests
 ```bash
-uv run pytest
+uv run python -m pytest
 ```
 
 ### 2. Run Type Checker (`ty`)
@@ -86,9 +86,13 @@ uv run python3 examples/demo_workflow.py
 
 ## Key Modules & Component Reference
 
-### 1. `windows.iso`
+### 1. `windows.iso` & `ISO`
+- **`ISO`**: Object-oriented Windows ISO representation.
+  - **`ISO(path)`**: Instantiates an ISO object from a local file path or existing ISO instance.
+  - **`ISO.from_version(version, cache_dir=None)`**: Resolves official/direct download links, verifies existing files, and caches ISOs in `~/.cache/windows/isos/`.
+  - **`ISO.from_url(url, cache_dir=None)`**: Downloads and caches ISO from direct URL.
+  - **`ISO.resolve(iso_or_version)`**: Resolves any ISO identifier (ISO instance, version alias, URL, or Path) to an `ISO` object.
 - **`WindowsVersion`**: Enum for supported Windows builds (`WIN10_22H2`, `WIN11_25H2`, etc.).
-- **`get_iso(version_or_name, cache_dir=None)`**: Resolves official/direct download links, verifies existing files, and stores ISOs in `~/.cache/windows/isos/`.
 - **`create_dummy_iso(path)`**: Generates lightweight ISO files for fast testing.
 
 ### 2. `windows.unattend`
@@ -101,14 +105,16 @@ uv run python3 examples/demo_workflow.py
   - Windows kernel debugging and testsigning enabled (`bcdedit /debug on`, `bcdedit /set testsigning on`)
 - **`create_unattend_iso(target_iso_path, ...)`**: Packages `autounattend.xml`, `setup.cmd`, `qemu-ga-x86_64.msi`, and VirtIO tools into a secondary CD-ROM ISO.
 
-### 3. `windows.image`
-- **`create_image_from_iso(iso_path, output_disk=None, use_cache=True, ...)`**:
-  - Automatically provisions a clean Windows installation in a QEMU VM.
-  - Caches the installed disk in `~/.cache/windows/images/`.
-  - Creates a lightweight QEMU overlay disk (`.qcow2`) pointing to the base image. If `output_disk` is omitted, automatically generates a unique randomized filename (`windows_overlay_<uuid>.qcow2`).
+### 3. `windows.image` & `Image`
+- **`Image`**: Represents an installed Windows disk image (`.qcow2`).
+  - **`Image(disk_path)`**: Instantiates an `Image` from a local disk path or existing Image instance.
+  - **`Image.from_iso(iso, output_disk=None, use_cache=True, ...)`**:
+    - Automatically provisions a clean Windows installation in a QEMU VM.
+    - Caches the installed disk in `~/.cache/windows/images/`.
+    - Creates a lightweight QEMU overlay disk (`.qcow2`) pointing to the base image. If `output_disk` is omitted, automatically generates a unique randomized filename (`windows_overlay_<uuid>.qcow2`).
 
 ### 4. `windows.machine` & `Machine`
-- **`create_machine_from_image(image, ram_mb=4096, cpus=4, headless=True, ...)`**: Instantiates a runnable VM controller.
+- **`Machine(image, ram_mb=4096, cpus=4, headless=True, ...)`**: Instantiates a runnable VM controller from an `Image` or disk path.
 - **`machine.power.on()` / `.off()` / `.restart()`**: Manages QEMU process lifecycle.
 - **`machine.run(timeout=180)`**: Powers on VM, waits for QGA readiness, and runs initial sanity check.
 - **`machine.debug(backend="ntoseye" | "qemu_monitor", gdb_port=1234, ...)`**:

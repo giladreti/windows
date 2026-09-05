@@ -1,8 +1,8 @@
-"""Machine, Power, and Console controller for Windows QEMU VMs using QEMU Guest Agent."""
-
+import os
 import shutil
 import time
 from collections.abc import Callable
+from pathlib import Path
 
 from windows.console import ConsoleController
 from windows.executor import CommandController, CommandResult
@@ -54,7 +54,7 @@ class Machine:
 
     def __init__(
         self,
-        image: Image,
+        image: "Image | str | Path | os.PathLike",
         ram_mb: int = 4096,
         cpus: int = 4,
         headless: bool = True,
@@ -62,6 +62,8 @@ class Machine:
         username: str = DEFAULT_USERNAME,
         password: str = DEFAULT_PASSWORD,
     ):
+        if not isinstance(image, Image):
+            image = Image(image)
         self.image = image
         self.ram_mb = ram_mb
         self.cpus = cpus
@@ -183,25 +185,3 @@ class Machine:
 
     def __repr__(self) -> str:
         return f"<Machine image={self.image!r} status={self.power.status!r}>"
-
-
-def create_machine_from_image(
-    image: Image,
-    ram_mb: int = 4096,
-    cpus: int = 4,
-    headless: bool = True,
-    vnc_display: int | None = None,
-    username: str = DEFAULT_USERNAME,
-    password: str = DEFAULT_PASSWORD,
-    **kwargs,
-) -> Machine:
-    """Create a Machine instance from an installed Image."""
-    return Machine(
-        image=image,
-        ram_mb=ram_mb,
-        cpus=cpus,
-        headless=headless,
-        vnc_display=vnc_display,
-        username=username,
-        password=password,
-    )

@@ -3,7 +3,7 @@
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from windows.image import create_image_from_iso
+from windows.image import Image
 from windows.iso import (
     clear_image_cache,
     clear_iso_cache,
@@ -71,7 +71,7 @@ def test_installed_image_caching_and_reuse(tmp_path):
         mock_pm.return_value = mock_pm_instance
 
         # First call: performs setup and caches installed disk image
-        create_image_from_iso(cached_iso, output_disk=output_disk1)
+        Image.from_iso(cached_iso, output_disk=output_disk1)
         assert mock_pm.call_count == 1
         assert output_disk1.exists()
 
@@ -80,7 +80,7 @@ def test_installed_image_caching_and_reuse(tmp_path):
         assert len(cached_images) == 1
 
         # Second call: reuses cached installed image instantly via overlay, skipping QEMU setup!
-        create_image_from_iso(cached_iso, output_disk=output_disk2)
+        Image.from_iso(cached_iso, output_disk=output_disk2)
         assert mock_pm.call_count == 1  # QEMU setup skipped!
         assert output_disk2.exists()
         assert output_disk2.read_bytes() == b"MOCK_QCOW2_HEADER_INSTALLED_IMAGE_DATA"
@@ -112,8 +112,8 @@ def test_multiple_separate_qcow_disk_images(tmp_path):
         mock_pm_instance.is_running.side_effect = [False, False]
         mock_pm.return_value = mock_pm_instance
 
-        img1 = create_image_from_iso(str(cached_iso), output_disk=disk1_path, use_cache=False)
-        img2 = create_image_from_iso(str(cached_iso), output_disk=disk2_path, use_cache=False)
+        img1 = Image.from_iso(str(cached_iso), output_disk=disk1_path, use_cache=False)
+        img2 = Image.from_iso(str(cached_iso), output_disk=disk2_path, use_cache=False)
 
         assert img1.disk_path != img2.disk_path
         assert img1.disk_path == disk1_path.resolve()

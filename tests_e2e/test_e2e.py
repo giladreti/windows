@@ -6,8 +6,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import windows
-from windows.image import Image, create_image_from_iso
-from windows.machine import create_machine_from_image
+from windows.image import Image
+from windows.iso import ISO, WindowsVersion
+from windows.machine import Machine
 from windows.qemu import create_qcow2_disk
 
 
@@ -18,7 +19,7 @@ def test_e2e_full_workflow_mocked(tmp_path):
     image = Image(disk_path)
 
     # 1. Instantiate VM machine
-    machine = create_machine_from_image(image, ram_mb=512, cpus=1)
+    machine = Machine(image, ram_mb=512, cpus=1)
 
     mock_qga = MagicMock()
     mock_qga.exec.return_value = ("Microsoft Windows [Version 10.0.19045]\n", "", 0)
@@ -60,9 +61,9 @@ def test_e2e_full_workflow_mocked(tmp_path):
 @pytest.mark.skipif(os.environ.get("RUN_E2E") != "1", reason="Full live ISO QEMU install test requires RUN_E2E=1")
 def test_e2e_live_iso_windows_install_and_command():
     """Full live QEMU installation and guest execution E2E test."""
-    iso = windows.get_iso(windows.WindowsVersion.WIN10_22H2)
-    image = create_image_from_iso(iso, output_disk="live_e2e.qcow2", timeout_minutes=30)
-    machine = create_machine_from_image(image)
+    iso = ISO.from_version(WindowsVersion.WIN10_22H2)
+    image = Image.from_iso(iso, output_disk="live_e2e.qcow2", timeout_minutes=30)
+    machine = Machine(image)
 
     try:
         machine.power.on()

@@ -3,17 +3,16 @@
 import shutil
 from pathlib import Path
 
-import windows
-from windows.iso import WindowsVersion
+from windows import ISO, Image, Machine, WindowsVersion
 
 
 def main():
     print("=== RemotePath File & Directory Operations Example over QGA ===")
 
     # 1. Prepare/reuse VM image
-    iso = windows.get_iso(WindowsVersion.WIN10_22H2)
-    image = windows.create_image_from_iso(iso, output_disk="my_vm_overlay.qcow2", use_cache=True)
-    machine = windows.create_machine_from_image(image)
+    iso = ISO.from_version(WindowsVersion.WIN10_22H2)
+    image = Image.from_iso(iso, output_disk="my_vm_overlay.qcow2", use_cache=True)
+    machine = Machine(image)
 
     # 2. Start VM and wait for QGA
     machine.power.on()

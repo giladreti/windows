@@ -8,9 +8,9 @@ import requests
 
 from windows.executor import CommandController, CommandResult
 from windows.file import FileController
-from windows.image import Image, create_image_from_iso
+from windows.image import Image
 from windows.iso import create_dummy_iso, resolve_iso
-from windows.machine import create_machine_from_image
+from windows.machine import Machine
 from windows.qemu import QEMUProcessManager
 
 
@@ -155,7 +155,7 @@ def test_power_controller_actions(tmp_path):
     disk = tmp_path / "test.qcow2"
     disk.write_bytes(b"qcow2")
     img = Image(disk_path=disk)
-    machine = create_machine_from_image(img)
+    machine = Machine(img)
 
     with (
         patch.object(machine._process_manager, "start") as mock_start,
@@ -172,7 +172,7 @@ def test_power_controller_actions(tmp_path):
         assert mock_stop.call_count == 2
 
 
-def test_create_image_from_iso_pipeline_mock(tmp_path):
+def test_image_from_iso_pipeline_mock(tmp_path):
     iso_file = tmp_path / "test.iso"
     iso_file.write_bytes(b"ISO content")
     disk_output = tmp_path / "output.qcow2"
@@ -200,8 +200,8 @@ def test_create_image_from_iso_pipeline_mock(tmp_path):
         mock_console_inst = MagicMock()
         mock_console_cls.return_value = mock_console_inst
 
-        img = create_image_from_iso(
-            iso_path=str(iso_file),
+        img = Image.from_iso(
+            iso=str(iso_file),
             output_disk=disk_output,
             timeout_minutes=1,
             use_cache=False,

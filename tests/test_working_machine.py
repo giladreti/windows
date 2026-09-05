@@ -3,7 +3,7 @@
 import time
 
 from windows.image import Image
-from windows.machine import create_machine_from_image
+from windows.machine import Machine
 from windows.qemu import create_qcow2_disk
 
 
@@ -13,7 +13,7 @@ def test_machine_power_on_creates_working_process(tmp_path):
     create_qcow2_disk(disk_path, size="10M")
 
     img = Image(disk_path=disk_path)
-    machine = create_machine_from_image(img, ram_mb=512, cpus=1, headless=True)
+    machine = Machine(img, ram_mb=512, cpus=1, headless=True)
 
     # 1. Power ON
     machine.power.on()

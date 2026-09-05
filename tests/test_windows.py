@@ -7,7 +7,7 @@ from windows.executor import CommandController, CommandResult
 from windows.file import FileController, RemoteFile
 from windows.image import Image
 from windows.iso import WINDOWS_VERSION_URLS, resolve_iso
-from windows.machine import Machine, create_machine_from_image
+from windows.machine import Machine
 from windows.qemu import build_install_qemu_cmd
 from windows.unattend import generate_unattend_xml, save_unattend_xml
 
@@ -120,6 +120,6 @@ def test_machine_creation(tmp_path):
     fake_disk.write_bytes(b"dummy qcow2 content")
 
     img = Image(fake_disk)
-    mach = create_machine_from_image(img)
+    mach = Machine(img)
     assert isinstance(mach, Machine)
     assert mach.image.disk_path == fake_disk.resolve()

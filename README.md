@@ -48,20 +48,20 @@ uv sync
 ```python
 import windows
 from pathlib import Path
-from windows.iso import WindowsVersion
+from windows import ISO, Image, Machine, WindowsVersion
 
 # 1. Fetch / resolve Windows ISO
-iso = windows.get_iso(WindowsVersion.WIN10_22H2)
+iso = ISO.from_version(WindowsVersion.WIN10_22H2)
 
 # 2. Provision VM image (uses cached base image + creates instant overlay disk)
-image = windows.create_image_from_iso(
-    iso_path=iso,
+image = Image.from_iso(
+    iso=iso,
     output_disk=None,  # Automatically generates unique random filename
     use_cache=True,
 )
 
 # 3. Create Machine instance
-machine = windows.create_machine_from_image(image)
+machine = Machine(image)
 
 # 4. Start VM and wait for QGA interface
 machine.run(timeout=180)
@@ -117,8 +117,8 @@ machine.debug(
 ## 🧪 Testing & Verification
 
 ```bash
-# Run unit test suite (50+ tests, fully mocked)
-uv run pytest
+# Run unit test suite (55+ tests, fully mocked)
+uv run python -m pytest
 
 # Run type checker
 uv run ty check

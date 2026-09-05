@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 from windows.console import ConsoleController, ConsoleInfo
 from windows.image import Image
-from windows.machine import create_machine_from_image
+from windows.machine import Machine
 
 
 def test_console_info():
@@ -56,7 +56,7 @@ def test_machine_console_integration(tmp_path):
     disk.write_bytes(b"dummy qcow2")
     img = Image(disk_path=disk)
 
-    machine = create_machine_from_image(img, vnc_display=1)
+    machine = Machine(img, vnc_display=1)
 
     assert machine.console.port == 5901
     assert machine.console.info.vnc_url == "vnc://127.0.0.1:5901"

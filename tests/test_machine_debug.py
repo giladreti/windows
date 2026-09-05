@@ -3,7 +3,7 @@
 from unittest.mock import patch
 
 from windows.image import Image
-from windows.machine import create_machine_from_image
+from windows.machine import Machine
 
 
 @patch("windows.machine.QEMUProcessManager")
@@ -12,7 +12,7 @@ def test_machine_debug_stop_at_boot(mock_build_cmd, mock_pm_cls, tmp_path):
     fake_disk = tmp_path / "win.qcow2"
     fake_disk.write_bytes(b"dummy")
     img = Image(fake_disk)
-    mach = create_machine_from_image(img)
+    mach = Machine(img)
 
     init_script = ["info status", "info cpus"]
 
@@ -37,7 +37,7 @@ def test_machine_run_success(mock_pm_cls, tmp_path):
     fake_disk = tmp_path / "win.qcow2"
     fake_disk.write_bytes(b"dummy")
     img = Image(fake_disk)
-    mach = create_machine_from_image(img)
+    mach = Machine(img)
 
     with (
         patch.object(mach.command, "wait_until_ready", return_value=True),
