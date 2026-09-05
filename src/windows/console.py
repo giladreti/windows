@@ -3,6 +3,8 @@
 import shutil
 import socket
 import subprocess
+import tempfile
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -34,8 +36,222 @@ class ConsoleInfo:
         return f"<ConsoleInfo host={self.host!r} port={self.port} vnc_url={self.vnc_url!r}>"
 
 
+class ScreenRecorder:
+    """Context manager and controller for recording screen videos of the QEMU VM console."""
+
+    def __init__(
+        self,
+        console: "ConsoleController",
+        output_path: str | Path = "recording.mp4",
+        fps: float = 10.0,
+    ):
+        self.console = console
+        self.output_path = Path(output_path).resolve()
+        if not self.output_path.suffix:
+            self.output_path = self.output_path.with_suffix(".mp4")
+        self.fps = max(1.0, float(fps))
+        self.frame_count: int = 0
+        self._temp_dir_obj: tempfile.TemporaryDirectory[str] | None = None
+        self._temp_dir: Path | None = None
+        self._thread: threading.Thread | None = None
+        self._stop_event = threading.Event()
+        self._start_time: float | None = None
+        self._end_time: float | None = None
+
+    @property
+    def is_recording(self) -> bool:
+        """Return True if background video capture is currently active."""
+        return self._thread is not None and self._thread.is_alive()
+
+    @property
+    def duration(self) -> float:
+        """Return total elapsed recording duration in seconds."""
+        if self._start_time is None:
+            return 0.0
+        end = self._end_time if self._end_time is not None else time.time()
+        return max(0.0, end - self._start_time)
+
+    def start(self) -> "ScreenRecorder":
+        """Start capturing screen frames in the background."""
+        if self.is_recording:
+            return self
+
+        if not self.console.monitor_socket_path or not self.console.monitor_socket_path.exists():
+            raise ConsoleError(
+                f"Cannot record video: QEMU monitor socket is not connected or active: {self.console.monitor_socket_path}"
+            )
+
+        self.output_path.parent.mkdir(parents=True, exist_ok=True)
+        self._temp_dir_obj = tempfile.TemporaryDirectory(prefix="qemu_rec_")
+        self._temp_dir = Path(self._temp_dir_obj.name)
+        self.frame_count = 0
+        self._stop_event.clear()
+        self._start_time = time.time()
+        self._end_time = None
+
+        # Capture initial frame immediately
+        self._capture_single_frame()
+
+        self._thread = threading.Thread(target=self._capture_worker, daemon=True, name="ScreenRecorderWorker")
+        self._thread.start()
+        return self
+
+    def _capture_single_frame(self) -> None:
+        if not self._temp_dir:
+            return
+        frame_path = self._temp_dir / f"frame_{self.frame_count:06d}.ppm"
+        try:
+            self.console._dump_screen_ppm(frame_path)
+            if frame_path.exists() and frame_path.stat().st_size > 0:
+                self.frame_count += 1
+        except Exception:
+            pass
+
+    def _capture_worker(self) -> None:
+        interval = 1.0 / self.fps
+        next_capture_time = time.time() + interval
+        while not self._stop_event.is_set():
+            now = time.time()
+            sleep_duration = next_capture_time - now
+            if sleep_duration > 0:
+                if self._stop_event.wait(sleep_duration):
+                    break
+            self._capture_single_frame()
+            next_capture_time += interval
+            if next_capture_time < time.time():
+                next_capture_time = time.time() + interval
+
+    def stop(self) -> Path:
+        """Stop screen recording, compile the captured frames into a video, and return the video path."""
+        if not self.is_recording and self._temp_dir is None:
+            return self.output_path
+
+        self._stop_event.set()
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=5.0)
+        self._thread = None
+        self._end_time = time.time()
+
+        try:
+            self._encode_video()
+        finally:
+            if self._temp_dir_obj is not None:
+                self._temp_dir_obj.cleanup()
+                self._temp_dir_obj = None
+                self._temp_dir = None
+
+        return self.output_path
+
+    def _encode_video(self) -> None:
+        if not self._temp_dir or self.frame_count == 0:
+            raise ConsoleError("No video frames captured during recording.")
+
+        ffmpeg_binary = shutil.which("ffmpeg")
+        suffix = self.output_path.suffix.lower()
+
+        if not ffmpeg_binary:
+            if suffix == ".gif":
+                self._encode_gif_pil()
+                return
+            raise ConsoleError(
+                f"ffmpeg binary was not found on PATH. ffmpeg is required to encode '{suffix}' video recordings."
+            )
+
+        if suffix == ".mp4":
+            cmd = [
+                ffmpeg_binary,
+                "-y",
+                "-framerate",
+                str(self.fps),
+                "-i",
+                str(self._temp_dir / "frame_%06d.ppm"),
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-preset",
+                "veryfast",
+                "-crf",
+                "23",
+                "-movflags",
+                "+faststart",
+                str(self.output_path),
+            ]
+        elif suffix == ".webm":
+            cmd = [
+                ffmpeg_binary,
+                "-y",
+                "-framerate",
+                str(self.fps),
+                "-i",
+                str(self._temp_dir / "frame_%06d.ppm"),
+                "-c:v",
+                "libvpx-vp9",
+                "-pix_fmt",
+                "yuv420p",
+                str(self.output_path),
+            ]
+        elif suffix == ".gif":
+            cmd = [
+                ffmpeg_binary,
+                "-y",
+                "-framerate",
+                str(self.fps),
+                "-i",
+                str(self._temp_dir / "frame_%06d.ppm"),
+                "-vf",
+                "split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse",
+                str(self.output_path),
+            ]
+        else:
+            cmd = [
+                ffmpeg_binary,
+                "-y",
+                "-framerate",
+                str(self.fps),
+                "-i",
+                str(self._temp_dir / "frame_%06d.ppm"),
+                str(self.output_path),
+            ]
+
+        res = subprocess.run(cmd, capture_output=True, text=True)
+        if res.returncode != 0:
+            raise ConsoleError(f"Failed to encode video recording with ffmpeg: {res.stderr.strip()}")
+
+    def _encode_gif_pil(self) -> None:
+        from PIL import Image as PILImage
+
+        if not self._temp_dir:
+            return
+        frame_files = sorted(self._temp_dir.glob("frame_*.ppm"))
+        if not frame_files:
+            raise ConsoleError("No frames available for GIF encoding.")
+
+        images = [PILImage.open(f) for f in frame_files]
+        images[0].save(
+            self.output_path,
+            save_all=True,
+            append_images=images[1:],
+            duration=int(1000 / self.fps),
+            loop=0,
+        )
+        for img in images:
+            img.close()
+
+    def __enter__(self) -> "ScreenRecorder":
+        self.start()
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        self.stop()
+
+    def __repr__(self) -> str:
+        status = "recording" if self.is_recording else "stopped"
+        return f"<ScreenRecorder output={str(self.output_path)!r} fps={self.fps} status={status!r} frames={self.frame_count}>"
+
+
 class ConsoleController:
-    """Controller for opening, managing, and taking screenshots of the QEMU VM display console."""
+    """Controller for opening, managing, screenshotting, and recording the QEMU VM display console."""
 
     # Dedicated native VNC viewer binaries (excluding browser handlers like xdg-open)
     KNOWN_VIEWERS: list[str] = [
@@ -61,11 +277,26 @@ class ConsoleController:
         self.display_index = display_index
         self.monitor_socket_path = Path(monitor_socket_path).resolve() if monitor_socket_path else None
         self._viewer_process: subprocess.Popen | None = None
+        self._monitor_lock = threading.Lock()
 
     @property
     def info(self) -> ConsoleInfo:
         """Return VNC connection details."""
         return ConsoleInfo(host=self.host, port=self.port, display_index=self.display_index)
+
+    def _dump_screen_ppm(self, ppm_path: Path) -> None:
+        """Send screendump command to QEMU monitor socket."""
+        ppm_path = Path(ppm_path).resolve()
+        with self._monitor_lock:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+                s.settimeout(3.0)
+                s.connect(str(self.monitor_socket_path))
+                try:
+                    s.recv(1024)
+                except Exception:
+                    pass
+                s.sendall(f"screendump {ppm_path}\n".encode())
+                time.sleep(0.05)
 
     def screenshot(self, output_path: str | Path = "screenshot.png") -> Path:
         """Capture a live screenshot of the VM's active display screen and save as PNG."""
@@ -80,13 +311,7 @@ class ConsoleController:
             raise ConsoleError(f"QEMU monitor socket is not connected or active: {self.monitor_socket_path}")
 
         ppm_path = output_path.with_suffix(".tmp.ppm")
-
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-            s.settimeout(3.0)
-            s.connect(str(self.monitor_socket_path))
-            s.recv(1024)
-            s.sendall(f"screendump {ppm_path}\n".encode())
-            time.sleep(0.5)
+        self._dump_screen_ppm(ppm_path)
 
         if output_path.suffix.lower() == ".ppm":
             if ppm_path != output_path and ppm_path.exists():
@@ -102,28 +327,50 @@ class ConsoleController:
 
         return output_path
 
+    def record(
+        self,
+        output_path: str | Path = "recording.mp4",
+        fps: float = 10.0,
+    ) -> ScreenRecorder:
+        """Create a video recording context manager / recorder for the VM screen.
+
+        Usage:
+            with machine.console.record("demo.mp4", fps=10) as rec:
+                # Perform guest actions...
+                machine.command.run(...)
+
+        Args:
+            output_path: Target video file path (supports .mp4, .webm, .gif, .mkv, .avi).
+            fps: Frame rate for recording in frames per second (default: 10.0).
+
+        Returns:
+            A `ScreenRecorder` instance usable as a context manager or standalone recorder.
+        """
+        return ScreenRecorder(console=self, output_path=output_path, fps=fps)
+
     def send_monitor_command(self, command: str, timeout: float = 3.0) -> str:
         """Send a raw HMP command string to the QEMU monitor socket and return output."""
         if not self.monitor_socket_path or not self.monitor_socket_path.exists():
             raise ConsoleError(f"QEMU monitor socket is not connected or active: {self.monitor_socket_path}")
 
         output = ""
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-            s.settimeout(timeout)
-            s.connect(str(self.monitor_socket_path))
-            try:
-                s.recv(1024)
-            except Exception:
-                pass
+        with self._monitor_lock:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+                s.settimeout(timeout)
+                s.connect(str(self.monitor_socket_path))
+                try:
+                    s.recv(1024)
+                except Exception:
+                    pass
 
-            cmd = command.strip() + "\n"
-            s.sendall(cmd.encode("utf-8"))
-            time.sleep(0.2)
-            try:
-                data = s.recv(4096)
-                output = data.decode("utf-8", errors="replace")
-            except Exception:
-                output = ""
+                cmd = command.strip() + "\n"
+                s.sendall(cmd.encode("utf-8"))
+                time.sleep(0.2)
+                try:
+                    data = s.recv(4096)
+                    output = data.decode("utf-8", errors="replace")
+                except Exception:
+                    output = ""
 
         return output
 
