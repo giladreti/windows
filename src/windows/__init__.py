@@ -24,6 +24,13 @@ from windows.iso import (
     resolve_iso,
 )
 from windows.machine import Machine, PowerController
+from windows.network import (
+    NetworkController,
+    NetworkInterface,
+    NICModel,
+    PacketCapture,
+    VirtualSwitch,
+)
 from windows.processes import ProcessController, ProcessInfo
 from windows.qga import QGAClient, QGAError
 from windows.registry import RegistryController
@@ -43,6 +50,10 @@ __all__ = [
     "ImagePath",
     "Machine",
     "MountedPartition",
+    "NICModel",
+    "NetworkController",
+    "NetworkInterface",
+    "PacketCapture",
     "PartitionInfo",
     "PowerController",
     "ProcessController",
@@ -60,6 +71,7 @@ __all__ = [
     "SnapshotError",
     "SnapshotInfo",
     "SnapshotList",
+    "VirtualSwitch",
     "WindowsVersion",
     "clear_image_cache",
     "clear_iso_cache",

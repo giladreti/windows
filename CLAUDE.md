@@ -28,6 +28,7 @@ windows/
 │       ├── image.py         # Image representation and Image.from_iso provisioning logic
 │       ├── iso.py           # Windows ISO downloading, resolving, hashing, and caching
 │       ├── machine.py       # Machine instance, PowerController, machine.run(), machine.debug()
+│       ├── network.py       # NetworkController, NICModel, VirtualSwitch, PacketCapture, QMPClient
 │       ├── processes.py     # ProcessController & ProcessInfo (listing, getting, and killing processes)
 │       ├── qemu.py          # QEMU command builders, process manager, and qemu-img disk utilities
 │       ├── qga.py           # Out-of-band QEMU Guest Agent JSON-RPC over UNIX domain socket
@@ -35,13 +36,15 @@ windows/
 │       ├── services.py      # ServiceController & ServiceInfo (list, start, stop, restart services)
 │       ├── snapshot.py      # SnapshotController & SnapshotInfo (create, revert, list, and fork snapshots)
 │       └── unattend.py      # Autounattend.xml generation, setup.cmd, and secondary ISO builder
-├── tests/                   # Mocked, ultra-fast unit test suite (60+ tests)
+├── tests/                   # Mocked, ultra-fast unit test suite (90 tests)
 │   ├── test_abstractions.py # Process, Registry, Service, and random output_disk tests
 │   ├── test_advanced.py     # Cache, ISO resolution, and edge case tests
 │   ├── test_cache.py        # ISO and image overlay caching verification
 │   ├── test_console.py      # VNC launcher, screenshot, and monitor tests
+│   ├── test_disk.py         # Offline disk analysis and image.file tests
 │   ├── test_file_ops.py     # RemotePath directory upload, download, and exist_policy tests
 │   ├── test_machine_debug.py # machine.debug() and machine.run() tests
+│   ├── test_network.py      # Virtual networking, NIC hotplug, IP config, VirtualSwitch, packet capture tests
 │   ├── test_oop_interfaces.py # ISO, Image, Machine canonical interface tests
 │   ├── test_qga.py          # QGA JSON-RPC protocol and file streaming tests
 │   ├── test_snapshots.py    # SnapshotController lifecycle and machine forking tests
@@ -50,10 +53,13 @@ windows/
 ├── tests_e2e/               # Optional live end-to-end integration tests
 ├── examples/
 │   ├── demo_workflow.py     # Comprehensive runnable workflow example
-│   ├── ntoseye_debugging.py # ntoseye WinDbg-compatible kernel debugging example
-│   ├── remote_file_ops.py   # Path-style file & directory transfers example
 │   ├── monitor_debugging.py # QEMU monitor debugger & HMP scripting example
-│   └── snapshot_management.py # Snapshot management and machine forking example
+│   ├── ntoseye_debugging.py # ntoseye WinDbg-compatible kernel debugging example
+│   ├── offline_disk_analysis.py # Offline disk and image.file analysis example
+│   ├── remote_file_ops.py   # Path-style file & directory transfers example
+│   ├── snapshot_management.py # Snapshot management and machine forking example
+│   ├── video_recording.py   # Console screen recording example
+│   └── virtual_networking.py # Virtual networking, NIC hotplug, IP config, VirtualSwitch, packet capture example
 ├── pyproject.toml           # Project metadata, dependencies, ruff & ty configuration
 ├── README.md                # User-facing guide and quickstart
 └── CLAUDE.md                # Complete developer and architecture guide
@@ -197,3 +203,28 @@ remote_dir.download_dir(local_target_dir, exist_policy="overwrite")
 - `machine.snapshot.get(name)` / `machine.snapshot.exists(name)`: Query snapshot metadata.
 - `machine.snapshot.delete(name)`: Deletes a snapshot.
 - `machine.snapshot.fork(name=None, output_disk=None, run=False, ...)`: Extracts snapshot state to a new standalone disk and returns a new runnable `Machine` instance.
+
+### 10. `windows.network` (`machine.network`, `VirtualSwitch`, `PacketCapture`)
+`machine.network` manages dynamic NIC hotplugging, guest network configuration via QGA, multi-VM virtual switches, and packet capture:
+- **`NICModel`**: Hardware model enum (`E1000E`, `VIRTIO`, `VIRTIO_NET_PCI`, `RTL8139`, `E1000`, `VMXNET3`). Defaults to `E1000E` for built-in out-of-the-box Windows driver support.
+- **`machine.network` (`NetworkController`)**:
+  - `machine.network.list()`: Returns all attached `NetworkInterface` instances.
+  - `machine.network.default`: Returns primary default user-mode NIC (`nic0`).
+  - `machine.network.add(model=NICModel.E1000E, mac=None, switch=None)`: Dynamically hotplugs a NIC into running VM via QMP.
+  - `machine.network.remove(nic_or_id)`: Hot-unplugs a NIC via QMP.
+  - `machine.network.capture_host(output_path, interface="any")`: Captures host-side packets with `tcpdump`/`dumpcap`.
+- **`NetworkInterface`**:
+  - `nic.configure(ip, gateway=None, dns=None)`: Configures static IP/CIDR, default gateway, and DNS servers inside Windows via QGA matching the adapter by MAC address.
+  - `nic.set_dhcp()`: Restores DHCP and dynamic DNS addressing inside Windows.
+  - `nic.get_guest_config()`: Retrieves guest adapter alias, IP addresses, gateway, and status.
+  - `with nic.capture("traffic.pcap") as cap:`: Captures interface traffic to `.pcap` using QEMU's `filter-dump` subsystem without host root permissions.
+  - `nic.wireshark()`: Launches live Wireshark capture on the adapter.
+  - `nic.remove()`: Hot-unplugs adapter from running VM.
+- **`VirtualSwitch`**:
+  - `VirtualSwitch(name, mode="auto" | "socket" | "bridge")`: Creates multi-VM broadcast domain. Auto-selects userspace multicast socket switching (`230.0.0.1:port`) when non-root, or Linux kernel bridge when root.
+  - `switch.connect(machine, model=NICModel.E1000E, mac=None)`: Hotplugs a machine into this switch.
+  - `switch.disconnect(nic_or_id)`: Disconnects adapter from switch.
+  - `with switch.capture("switch.pcap") as cap:`: Captures all switch traffic to `.pcap`.
+  - `switch.wireshark()`: Launches live Wireshark on switch.
+  - `switch.destroy()`: Tears down switch and cleans up sockets/bridge.
+

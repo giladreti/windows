@@ -3,11 +3,13 @@ import shutil
 import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from windows.console import ConsoleController, ScreenRecorder
 from windows.executor import CommandController, CommandResult
 from windows.file import FileController
 from windows.image import Image
+from windows.network import NetworkController
 from windows.processes import ProcessController
 from windows.qemu import QEMUProcessManager, build_run_qemu_cmd, find_free_port
 from windows.registry import RegistryController
@@ -83,6 +85,8 @@ class PowerController:
 class Machine:
     """Represents a runnable Windows virtual machine instance."""
 
+    _allocated_vnc_ports: set[int] = set()
+
     def __init__(
         self,
         image: "Image | str | Path | os.PathLike",
@@ -105,13 +109,25 @@ class Machine:
         if vnc_display is not None:
             actual_vnc_display = vnc_display
             actual_vnc_port = 5900 + vnc_display
+            Machine._allocated_vnc_ports.add(actual_vnc_port)
         else:
-            actual_vnc_port = find_free_port(5900)
+            actual_vnc_port = find_free_port(5900, exclude=Machine._allocated_vnc_ports)
+            Machine._allocated_vnc_ports.add(actual_vnc_port)
             actual_vnc_display = actual_vnc_port - 5900
 
+        self.vnc_port = actual_vnc_port
         self.vnc_display = actual_vnc_display
         self.qga_socket_path = image.disk_path.parent / f"{image.disk_path.stem}_qga.sock"
         self.monitor_socket_path = image.disk_path.parent / f"{image.disk_path.stem}_monitor.sock"
+        self.qmp_socket_path = image.disk_path.parent / f"{image.disk_path.stem}_qmp.sock"
+
+        # Remove stale unix socket files if left behind by crashed/killed processes
+        for sock_p in (self.qga_socket_path, self.monitor_socket_path, self.qmp_socket_path):
+            if sock_p.exists():
+                try:
+                    sock_p.unlink()
+                except OSError:
+                    pass
 
         cmd = build_run_qemu_cmd(
             disk_path=image.disk_path,
@@ -121,6 +137,7 @@ class Machine:
             vnc_display=actual_vnc_display,
             monitor_socket_path=self.monitor_socket_path,
             qga_socket_path=self.qga_socket_path,
+            qmp_socket_path=self.qmp_socket_path,
         )
         self._process_manager = QEMUProcessManager(cmd)
 
@@ -139,6 +156,7 @@ class Machine:
         self.registry = RegistryController(self.command)
         self.services = ServiceController(self.command)
         self.snapshot = SnapshotController(self)
+        self.network = NetworkController(self)
 
     def pause(self) -> None:
         """Pause VM CPU execution."""
@@ -279,6 +297,22 @@ class Machine:
             self.console.monitor_continue()
 
         return self
+
+    def close(self) -> None:
+        """Clean up machine resources and release reserved ports."""
+        if hasattr(self, "vnc_port"):
+            Machine._allocated_vnc_ports.discard(self.vnc_port)
+
+    def __del__(self) -> None:
+        self.close()
+
+    def __enter__(self) -> "Machine":
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        if self.power.status == "running":
+            self.power.stop()
+        self.close()
 
     def __repr__(self) -> str:
         return f"<Machine image={self.image!r} status={self.power.status!r}>"

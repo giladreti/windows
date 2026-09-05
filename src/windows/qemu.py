@@ -28,9 +28,15 @@ def find_qemu_img_binary() -> str:
     return binary
 
 
-def find_free_port(start_port: int = 5985, max_attempts: int = 100) -> int:
+def find_free_port(
+    start_port: int = 5985,
+    max_attempts: int = 100,
+    exclude: set[int] | None = None,
+) -> int:
     """Find the next available TCP port on localhost starting from start_port."""
     for port in range(start_port, start_port + max_attempts):
+        if exclude and port in exclude:
+            continue
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
@@ -177,6 +183,7 @@ def build_run_qemu_cmd(
     qga_socket_path: Path | None = None,
     gdb_port: int | None = None,
     stop_at_boot: bool = False,
+    qmp_socket_path: Path | None = None,
     **kwargs,
 ) -> list[str]:
     """Build QEMU command line arguments for running an installed Windows VM."""
@@ -195,11 +202,31 @@ def build_run_qemu_cmd(
         "-netdev",
         "user,id=net0",
         "-device",
-        "e1000,netdev=net0",
+        "e1000,netdev=net0,id=nic0,mac=52:54:00:12:34:50",
         "-device",
         "qemu-xhci",
         "-device",
         "usb-tablet",
+        # PCIe root ports for hotplugging PCIe devices (e1000e, virtio-net-pci, etc.)
+        "-device",
+        "pcie-root-port,id=rp1,slot=1,chassis=1",
+        "-device",
+        "pcie-root-port,id=rp2,slot=2,chassis=2",
+        "-device",
+        "pcie-root-port,id=rp3,slot=3,chassis=3",
+        "-device",
+        "pcie-root-port,id=rp4,slot=4,chassis=4",
+        "-device",
+        "pcie-root-port,id=rp5,slot=5,chassis=5",
+        "-device",
+        "pcie-root-port,id=rp6,slot=6,chassis=6",
+        "-device",
+        "pcie-root-port,id=rp7,slot=7,chassis=7",
+        "-device",
+        "pcie-root-port,id=rp8,slot=8,chassis=8",
+        # PCIe-to-PCI bridge for legacy PCI device hotplugging (e1000, rtl8139, etc.)
+        "-device",
+        "pcie-pci-bridge,id=pci.1,bus=pcie.0",
         "-rtc",
         "base=localtime",
     ]
@@ -227,6 +254,9 @@ def build_run_qemu_cmd(
 
     if monitor_socket_path:
         cmd.extend(["-monitor", f"unix:{monitor_socket_path},server,nowait"])
+
+    if qmp_socket_path:
+        cmd.extend(["-qmp", f"unix:{qmp_socket_path},server,nowait"])
 
     if enable_kvm and os.path.exists("/dev/kvm"):
         cmd.extend(["-enable-kvm", "-cpu", "host"])

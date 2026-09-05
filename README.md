@@ -30,6 +30,13 @@ Automated, hands-free Windows QEMU virtual machine provisioning, instant base im
 - 📦 **Automated ISO Resolution & Unattended Setup**:
   - Download official Windows ISOs using standard enums (`WindowsVersion.WIN10_22H2`, `WindowsVersion.WIN11_25H2`).
   - Fully automated installation via generated `autounattend.xml` and driver injection bypassing OOBE and hardware checks.
+- 🌐 **Virtual Networking, Hotplugging & Switches (`machine.network`, `VirtualSwitch`)**:
+  - Hotplug and remove NICs on running VMs with custom hardware models (`NICModel.E1000E`, `NICModel.VIRTIO_NET_PCI`, `NICModel.RTL8139`, etc.).
+  - Configure static IP, subnet masks, default gateway, and DNS servers inside Windows over QGA.
+  - Multi-VM virtual switching (`VirtualSwitch`) using isolated userspace multicast sockets (no root required) or Linux kernel bridges.
+- 🦈 **Packet Capture & Live Wireshark (`nic.capture()`, `switch.capture()`)**:
+  - Direct Layer 2/3 packet capture to `.pcap` files using QEMU's `filter-dump` subsystem without host root permissions.
+  - Live traffic inspection via Wireshark (`nic.wireshark()`).
 - 📸 **Live Screen Capture**: Capture live high-resolution PNG screenshots of the VM display directly over the QEMU monitor socket.
 
 ---
@@ -131,6 +138,43 @@ for child in (image.file / r"C:\Windows").iterdir():
 with image.file as fs:
     (fs / r"C:\Users\Public\note1.txt").write_text("Batch note 1")
     (fs / r"C:\Users\Public\note2.txt").write_text("Batch note 2")
+```
+
+---
+
+## 🌐 Virtual Networking, NIC Hotplug & Packet Capture
+
+Hotplug network interfaces, configure guest IPs/DNS, interconnect VMs across virtual switches, and capture traffic to `.pcap`:
+
+```python
+from windows import Machine, VirtualSwitch, NICModel
+
+# 1. Create an isolated virtual switch (zero root privileges needed!)
+switch = VirtualSwitch("lab_switch")
+
+# 2. Hotplug a secondary NIC connected to the switch
+nic = machine.network.add(
+    model=NICModel.E1000E,
+    mac="52:54:00:12:34:56",
+    switch=switch,
+)
+
+# 3. Configure guest static IP and DNS inside Windows
+nic.configure(
+    ip="192.168.100.10/24",
+    gateway="192.168.100.1",
+    dns=["8.8.8.8", "1.1.1.1"],
+)
+
+# 4. Capture traffic to PCAP or launch live Wireshark
+with nic.capture("traffic.pcap"):
+    machine.command.run("ping 192.168.100.1 -n 4")
+
+# Or open live Wireshark:
+# nic.wireshark()
+
+# 5. Hot-unplug NIC
+nic.remove()
 ```
 
 ---
