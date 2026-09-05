@@ -10,6 +10,15 @@ from windows.disk import (
 )
 from windows.executor import CommandController, CommandResult
 from windows.file import FileController, RemoteFile, RemotePath
+from windows.firewall import (
+    FirewallAction,
+    FirewallController,
+    FirewallDirection,
+    FirewallError,
+    FirewallProfile,
+    FirewallRule,
+    NetworkCategory,
+)
 from windows.image import Image
 from windows.iso import (
     ISO,
@@ -45,12 +54,19 @@ __all__ = [
     "ConsoleInfo",
     "DiskController",
     "FileController",
+    "FirewallAction",
+    "FirewallController",
+    "FirewallDirection",
+    "FirewallError",
+    "FirewallProfile",
+    "FirewallRule",
     "Image",
     "ImageFileController",
     "ImagePath",
     "Machine",
     "MountedPartition",
     "NICModel",
+    "NetworkCategory",
     "NetworkController",
     "NetworkInterface",
     "PacketCapture",

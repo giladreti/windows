@@ -433,6 +433,14 @@ if ($adapter) {{
         cap.start()
         return cap._wireshark_proc
 
+    def set_profile(self, profile: "str | Any") -> None:
+        """Set the network firewall category/profile for this network interface (e.g. 'Private', 'Public')."""
+        self.machine.firewall.set_profile(self, profile)
+
+    def get_profile(self) -> str:
+        """Get the current network firewall category/profile for this network interface."""
+        return self.machine.firewall.get_profile(self)
+
     def remove(self) -> None:
         """Hot-unplug this network interface from the virtual machine."""
         self.controller.remove(self)

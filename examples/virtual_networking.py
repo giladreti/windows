@@ -73,10 +73,15 @@ def main():
 
         # 7. Enable ICMP Echo in Windows Firewall on VM2 so it replies to ping
         print("\n7. Enabling ICMP Echo in Windows Firewall on VM2...")
-        vm2.command.run(
-            "netsh advfirewall firewall add rule name='Allow Ping' protocol=icmpv4:8,any dir=in action=allow",
-            timeout=15,
+        vm2.firewall.add_rule(
+            name="Allow-Ping",
+            display_name="Allow Ping ICMPv4",
+            protocol="ICMPv4",
+            icmp_type=8,
+            direction="in",
+            action="allow",
         )
+        print("   ✓ Firewall rule added via vm.firewall.")
 
         # 8. Start packet capture on VM1's interface
         pcap_file = "inter_vm_traffic.pcap"

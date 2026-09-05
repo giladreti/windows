@@ -8,6 +8,7 @@ from typing import Any
 from windows.console import ConsoleController, ScreenRecorder
 from windows.executor import CommandController, CommandResult
 from windows.file import FileController
+from windows.firewall import FirewallController
 from windows.image import Image
 from windows.network import NetworkController
 from windows.processes import ProcessController
@@ -157,6 +158,7 @@ class Machine:
         self.services = ServiceController(self.command)
         self.snapshot = SnapshotController(self)
         self.network = NetworkController(self)
+        self.firewall = FirewallController(self)
 
     def pause(self) -> None:
         """Pause VM CPU execution."""

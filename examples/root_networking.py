@@ -77,11 +77,15 @@ def main() -> None:
 
         # 7. Enable ICMP Echo in Windows Firewall
         print("\n7. Enabling ICMP Echo in Windows Firewall...")
-        vm.command.run(
-            "netsh advfirewall firewall add rule name='Allow Ping' protocol=icmpv4:8,any dir=in action=allow",
-            timeout=15,
+        vm.firewall.add_rule(
+            name="Allow-Ping",
+            display_name="Allow Ping ICMPv4",
+            protocol="ICMPv4",
+            icmp_type=8,
+            direction="in",
+            action="allow",
         )
-        print("   ✓ Firewall rule added for ICMPv4 echo.")
+        print("   ✓ Firewall rule added via vm.firewall.")
 
         # 8. Start packet capture on the bridge interface
         print(f"\n8. Starting packet capture on bridge '{bridge_name}' -> {pcap_file}...")
