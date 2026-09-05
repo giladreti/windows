@@ -80,6 +80,20 @@ def test_iso_resolve(tmp_path):
     assert res == iso_obj
 
 
+def test_iso_list(tmp_path):
+    iso1 = tmp_path / "win10.iso"
+    iso2 = tmp_path / "win11.iso"
+    create_dummy_iso(iso1)
+    create_dummy_iso(iso2)
+
+    cached_isos = ISO.list(cache_dir=tmp_path)
+    assert len(cached_isos) == 2
+    assert all(isinstance(i, ISO) for i in cached_isos)
+    names = [i.name for i in cached_isos]
+    assert "win10.iso" in names
+    assert "win11.iso" in names
+
+
 def test_image_init_and_properties(tmp_path):
     disk_file = tmp_path / "installed.qcow2"
     disk_file.write_bytes(b"QCOW2_DATA")
@@ -105,6 +119,20 @@ def test_image_init_and_properties(tmp_path):
 
     with pytest.raises(FileNotFoundError, match="does not exist"):
         Image(tmp_path / "nonexistent.qcow2")
+
+
+def test_image_list(tmp_path):
+    img1 = tmp_path / "win10.qcow2"
+    img2 = tmp_path / "win11.qcow2"
+    img1.write_bytes(b"DATA1")
+    img2.write_bytes(b"DATA2")
+
+    cached_images = Image.list(cache_dir=tmp_path)
+    assert len(cached_images) == 2
+    assert all(isinstance(i, Image) for i in cached_images)
+    names = [i.name for i in cached_images]
+    assert "win10.qcow2" in names
+    assert "win11.qcow2" in names
 
 
 def test_image_from_iso_with_iso_object(tmp_path):

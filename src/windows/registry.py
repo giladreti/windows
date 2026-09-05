@@ -91,10 +91,15 @@ class RegistryController:
         }
         reg_type = type_map.get(value_type.lower(), "REG_SZ")
 
-        if value_name:
-            cmd = f'reg add "{norm_path}" /v "{value_name}" /t {reg_type} /d "{value}" /f'
+        if reg_type in ("REG_DWORD", "REG_QWORD"):
+            d_flag = f"/d {int(value)}"
         else:
-            cmd = f'reg add "{norm_path}" /ve /t {reg_type} /d "{value}" /f'
+            d_flag = f'/d "{value}"'
+
+        if value_name:
+            cmd = f'reg add "{norm_path}" /v "{value_name}" /t {reg_type} {d_flag} /f'
+        else:
+            cmd = f'reg add "{norm_path}" /ve /t {reg_type} {d_flag} /f'
 
         res = self.cmd.run(cmd, powershell=False, auto_retry=False)
         if res.returncode != 0:

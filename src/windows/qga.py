@@ -33,6 +33,19 @@ class QGAClient:
             except OSError as exc:
                 raise QGAError(f"Failed to connect to QGA socket at {self.socket_path}: {exc}") from exc
 
+            # Drain any stale buffered bytes from previous operations
+            s.setblocking(False)
+            try:
+                while True:
+                    discarded = s.recv(4096)
+                    if not discarded:
+                        break
+            except (BlockingIOError, OSError):
+                pass
+            finally:
+                s.setblocking(True)
+                s.settimeout(timeout)
+
             s.sendall(req_bytes)
 
             # Read response lines until valid JSON object is received

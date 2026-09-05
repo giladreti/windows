@@ -282,6 +282,11 @@ class ISO:
         resolved_path = resolve_iso(iso_path_or_version, cache_dir=cache_dir, show_progress=show_progress)
         return cls(resolved_path)
 
+    @classmethod
+    def list(cls, cache_dir: str | Path | None = None) -> list["ISO"]:
+        """List all cached ISO files as ISO instances."""
+        return [cls(p) for p in list_cached_isos(cache_dir=cache_dir)]
+
 
 def resolve_iso(
     iso_path_or_version: "ISO | str | Path | WindowsVersion",

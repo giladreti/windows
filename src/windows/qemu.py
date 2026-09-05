@@ -287,6 +287,22 @@ class QEMUProcessManager:
             self.process.wait()
             self.process = None
 
+    def kill(self) -> None:
+        """Immediately and unconditionally kill the QEMU process with SIGKILL."""
+        if not self.process:
+            return
+
+        if self.process.poll() is None:
+            self.process.kill()
+            try:
+                self.process.wait(timeout=3.0)
+            except Exception:
+                pass
+
+        if self.process.poll() is not None:
+            self.process.wait()
+            self.process = None
+
     def send_boot_keypress(self, socket_path: Path, count: int = 5, delay: float = 0.5) -> None:
         """Send Enter keypresses to QEMU monitor socket to bypass 'Press any key to boot from CD' prompts."""
         socket_path = Path(socket_path)
