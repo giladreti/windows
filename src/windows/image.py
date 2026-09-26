@@ -1,5 +1,7 @@
 import hashlib
+import json
 import os
+import subprocess
 import tempfile
 import time
 import uuid
@@ -90,6 +92,40 @@ class Image:
         return hash(self.disk_path)
 
     @property
+    def backing_file(self) -> Path | None:
+        """Return the path to the backing disk image if this image is an overlay, else None."""
+        try:
+            from windows.qemu import find_qemu_img_binary
+
+            qemu_img = find_qemu_img_binary()
+            res = subprocess.run(
+                [qemu_img, "info", "--output=json", str(self.disk_path)],
+                capture_output=True,
+                text=True,
+            )
+            if res.returncode == 0:
+                data = json.loads(res.stdout)
+                backing = data.get("full-backing-filename") or data.get("backing-filename")
+                if backing:
+                    return Path(backing)
+        except Exception:
+            pass
+        return None
+
+    @property
+    def is_overlay(self) -> bool:
+        """Return True if this image is an overlay backing another disk image."""
+        return self.backing_file is not None
+
+    @property
+    def base(self) -> "Image | None":
+        """Return an Image instance of the backing disk image if this image is an overlay, else None."""
+        bf = self.backing_file
+        if bf and bf.exists():
+            return Image(bf)
+        return None
+
+    @property
     def file(self) -> ImageFileController:
         """Path-like offline file controller for this disk image (e.g. `image.file / 'C:\\Windows'`)."""
         if not hasattr(self, "_file_controller") or self._file_controller is None:
@@ -144,6 +180,85 @@ class Image:
     def file_exists(self, path: str, partition: int | None = None) -> bool:
         """Return True if a file exists inside the offline image's Windows partition."""
         return self.disk.exists(path=path, partition=partition)
+
+    @classmethod
+    def from_base(
+        cls,
+        base: "Image | str | Path | os.PathLike | None" = None,
+        output_disk: "Image | str | Path | os.PathLike | None" = None,
+        *,
+        base_image: "Image | str | Path | os.PathLike | None" = None,
+        overlay_path: "Image | str | Path | os.PathLike | None" = None,
+    ) -> "Image":
+        """Create a thin qcow2 overlay backed by a base Windows disk image.
+
+        The overlay only stores writes/diffs on top of the base image (~200KB initial size),
+        enabling instant reuse and branching of base images without copying.
+
+        Args:
+            base: An existing Image instance, str, Path, or os.PathLike pointing to a base qcow2 image.
+            output_disk: Path for the new overlay disk image. If None, generates a unique random name.
+            base_image: Alias for base.
+            overlay_path: Alias for output_disk.
+
+        Returns:
+            An Image instance referencing the newly created overlay disk.
+
+        Raises:
+            ValueError: If neither base nor base_image is provided, or if output_disk equals base.
+            FileNotFoundError: If the base image file does not exist.
+        """
+        source = base if base is not None else base_image
+        if source is None:
+            raise ValueError("A base image must be provided.")
+
+        if isinstance(source, Image):
+            base_path = source.disk_path
+        elif isinstance(source, (str, Path, os.PathLike)):
+            base_path = Path(source).resolve()
+        else:
+            raise TypeError(f"Unsupported base image type: {type(source).__name__}")
+
+        if not base_path.exists():
+            raise FileNotFoundError(f"Base image file does not exist: {base_path}")
+
+        target = overlay_path if overlay_path is not None else output_disk
+        if target is None:
+            random_suffix = uuid.uuid4().hex[:8]
+            target = Path(f"{base_path.stem}_overlay_{random_suffix}.qcow2").resolve()
+        else:
+            if isinstance(target, Image):
+                target = target.disk_path
+            else:
+                target = Path(target)
+            target = target.resolve()
+            if target.is_dir():
+                random_suffix = uuid.uuid4().hex[:8]
+                target = target / f"{base_path.stem}_overlay_{random_suffix}.qcow2"
+
+        if target == base_path:
+            raise ValueError("Overlay path cannot be the same as the base image path.")
+
+        create_qcow2_overlay(target, base_path)
+        return cls(target)
+
+    def create_overlay(
+        self,
+        output_disk: "Image | str | Path | os.PathLike | None" = None,
+        *,
+        overlay_path: "Image | str | Path | os.PathLike | None" = None,
+    ) -> "Image":
+        """Create a thin qcow2 overlay backed by this base image."""
+        return self.from_base(self, output_disk=output_disk, overlay_path=overlay_path)
+
+    def overlay(
+        self,
+        output_disk: "Image | str | Path | os.PathLike | None" = None,
+        *,
+        overlay_path: "Image | str | Path | os.PathLike | None" = None,
+    ) -> "Image":
+        """Alias for create_overlay()."""
+        return self.create_overlay(output_disk=output_disk, overlay_path=overlay_path)
 
     @classmethod
     def from_iso(
