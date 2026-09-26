@@ -62,9 +62,7 @@ def test_firewall_status_and_is_enabled(mock_machine):
             {"Name": "Public", "Enabled": 0},
         ]
     )
-    mock_machine.command.run.return_value = CommandResult(
-        returncode=0, stdout=mock_profile_json, stderr=""
-    )
+    mock_machine.command.run.return_value = CommandResult(returncode=0, stdout=mock_profile_json, stderr="")
 
     status = fw.status()
     assert status == {"domain": True, "private": True, "public": False}
@@ -120,9 +118,7 @@ def test_firewall_set_and_get_profile_for_nic(mock_machine):
     assert "-NetworkCategory 'Public'" in call_script2
 
     # 3. Get profile via NIC method
-    mock_machine.command.run.return_value = CommandResult(
-        returncode=0, stdout="Private\n", stderr=""
-    )
+    mock_machine.command.run.return_value = CommandResult(returncode=0, stdout="Private\n", stderr="")
     prof = nic.get_profile()
     assert prof == "Private"
 
@@ -236,9 +232,7 @@ def test_firewall_list_rules_and_filtering(mock_machine):
         ]
     )
 
-    mock_machine.command.run.return_value = CommandResult(
-        returncode=0, stdout=rules_json, stderr=""
-    )
+    mock_machine.command.run.return_value = CommandResult(returncode=0, stdout=rules_json, stderr="")
 
     # All rules
     all_rules = fw.list_rules()
@@ -317,9 +311,7 @@ def test_firewall_remove_and_enable_disable_rule(mock_machine):
 
 def test_firewall_error_handling(mock_machine):
     fw = mock_machine.firewall
-    mock_machine.command.run.return_value = CommandResult(
-        returncode=1, stdout="", stderr="Cannot find rule"
-    )
+    mock_machine.command.run.return_value = CommandResult(returncode=1, stdout="", stderr="Cannot find rule")
 
     with pytest.raises(FirewallError, match="Cannot find rule"):
         fw.remove_rule("NonExistent")

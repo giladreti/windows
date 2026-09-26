@@ -416,10 +416,12 @@ if ($profs) { $profs | ConvertTo-Json -Compress } else { '[]' }
         if remote_port_str:
             args.append(f"-RemotePort @({','.join(repr(p.strip()) for p in remote_port_str.split(','))})")
         if local_address:
-            local_addr_str = ",".join(f"'{a.strip()}'" for a in (local_address if isinstance(local_address, (list, tuple)) else [local_address]))
+            addrs_local = [local_address] if isinstance(local_address, str) else list(local_address)
+            local_addr_str = ",".join(f"'{a.strip()}'" for a in addrs_local)
             args.append(f"-LocalAddress @({local_addr_str})")
         if remote_address:
-            remote_addr_str = ",".join(f"'{a.strip()}'" for a in (remote_address if isinstance(remote_address, (list, tuple)) else [remote_address]))
+            addrs_remote = [remote_address] if isinstance(remote_address, str) else list(remote_address)
+            remote_addr_str = ",".join(f"'{a.strip()}'" for a in addrs_remote)
             args.append(f"-RemoteAddress @({remote_addr_str})")
         if program:
             args.append(f"-Program '{program}'")
@@ -429,9 +431,12 @@ if ($profs) { $profs | ConvertTo-Json -Compress } else { '[]' }
             args.append(f"-IcmpType '{icmp_type}'")
         if interface is not None:
             from windows.network import NetworkInterface
+
             if isinstance(interface, NetworkInterface):
                 target_mac = interface.mac.replace(":", "").replace("-", "").upper()
-                args.append(f"-InterfaceAlias (Get-NetAdapter | Where-Object {{ ($_.MacAddress -replace '[:-]', '').ToUpper() -eq '{target_mac}' }} | Select-Object -First 1 -ExpandProperty Name)")
+                args.append(
+                    f"-InterfaceAlias (Get-NetAdapter | Where-Object {{ ($_.MacAddress -replace '[:-]', '').ToUpper() -eq '{target_mac}' }} | Select-Object -First 1 -ExpandProperty Name)"
+                )
             else:
                 args.append(f"-InterfaceAlias '{interface}'")
 
@@ -634,23 +639,31 @@ if ($r) {{
             port_updates.append(f"-Protocol '{protocol}'")
         if local_port is not None:
             p_str = _normalize_ports(local_port)
-            port_updates.append(f"-LocalPort @({','.join(repr(p.strip()) for p in p_str.split(','))})")
+            if p_str:
+                port_updates.append(f"-LocalPort @({','.join(repr(p.strip()) for p in p_str.split(','))})")
         if remote_port is not None:
             p_str = _normalize_ports(remote_port)
-            port_updates.append(f"-RemotePort @({','.join(repr(p.strip()) for p in p_str.split(','))})")
+            if p_str:
+                port_updates.append(f"-RemotePort @({','.join(repr(p.strip()) for p in p_str.split(','))})")
         if port_updates:
-            ps_parts.append(f"Get-NetFirewallRule -Name '{rule_name}' | Get-NetFirewallPortFilter | Set-NetFirewallPortFilter {' '.join(port_updates)}")
+            ps_parts.append(
+                f"Get-NetFirewallRule -Name '{rule_name}' | Get-NetFirewallPortFilter | Set-NetFirewallPortFilter {' '.join(port_updates)}"
+            )
 
         # Modify address filters if addresses specified
         addr_updates = []
         if local_address is not None:
-            local_addr_str = ",".join(f"'{a.strip()}'" for a in (local_address if isinstance(local_address, (list, tuple)) else [local_address]))
+            addrs_local = [local_address] if isinstance(local_address, str) else list(local_address)
+            local_addr_str = ",".join(f"'{a.strip()}'" for a in addrs_local)
             addr_updates.append(f"-LocalAddress @({local_addr_str})")
         if remote_address is not None:
-            remote_addr_str = ",".join(f"'{a.strip()}'" for a in (remote_address if isinstance(remote_address, (list, tuple)) else [remote_address]))
+            addrs_remote = [remote_address] if isinstance(remote_address, str) else list(remote_address)
+            remote_addr_str = ",".join(f"'{a.strip()}'" for a in addrs_remote)
             addr_updates.append(f"-RemoteAddress @({remote_addr_str})")
         if addr_updates:
-            ps_parts.append(f"Get-NetFirewallRule -Name '{rule_name}' | Get-NetFirewallAddressFilter | Set-NetFirewallAddressFilter {' '.join(addr_updates)}")
+            ps_parts.append(
+                f"Get-NetFirewallRule -Name '{rule_name}' | Get-NetFirewallAddressFilter | Set-NetFirewallAddressFilter {' '.join(addr_updates)}"
+            )
 
         # Modify application filters if program/service specified
         app_updates = []
@@ -659,7 +672,9 @@ if ($r) {{
         if service is not None:
             app_updates.append(f"-Service '{service}'")
         if app_updates:
-            ps_parts.append(f"Get-NetFirewallRule -Name '{rule_name}' | Get-NetFirewallApplicationFilter | Set-NetFirewallApplicationFilter {' '.join(app_updates)}")
+            ps_parts.append(
+                f"Get-NetFirewallRule -Name '{rule_name}' | Get-NetFirewallApplicationFilter | Set-NetFirewallApplicationFilter {' '.join(app_updates)}"
+            )
 
         if ps_parts:
             script = "; ".join(ps_parts)

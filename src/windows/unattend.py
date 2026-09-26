@@ -32,6 +32,23 @@ bcdedit /debug on >> C:\\windows_setup.log 2>&1
 bcdedit /set testsigning on >> C:\\windows_setup.log 2>&1
 bcdedit /dbgsettings serial debugport:1 baudrate:115200 >> C:\\windows_setup.log 2>&1
 
+echo === Configuring Boot and Recovery Policies === >> C:\\windows_setup.log 2>&1
+bcdedit /set {default} bootstatuspolicy ignoreallfailures >> C:\\windows_setup.log 2>&1
+bcdedit /set {default} recoveryenabled no >> C:\\windows_setup.log 2>&1
+bcdedit /set {current} bootstatuspolicy ignoreallfailures >> C:\\windows_setup.log 2>&1
+bcdedit /set {current} recoveryenabled no >> C:\\windows_setup.log 2>&1
+
+powercfg /h off >> C:\\windows_setup.log 2>&1
+powercfg /change standby-timeout-ac 0 >> C:\\windows_setup.log 2>&1
+powercfg /change monitor-timeout-ac 0 >> C:\\windows_setup.log 2>&1
+powercfg /setacvalueindex scheme_current sub_pci express 0 >> C:\\windows_setup.log 2>&1
+powercfg /setactive scheme_current >> C:\\windows_setup.log 2>&1
+sc config intelppm start= disabled >> C:\\windows_setup.log 2>&1
+reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\intelppm" /v Start /t REG_DWORD /d 4 /f >> C:\\windows_setup.log 2>&1
+
+:: Register post-reboot finalizer to wait for TiWorker, TrustedInstaller, and updates to finish before shutdown
+reg add "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\RunOnce" /v FinalizeInstall /t REG_SZ /d "powershell.exe -ExecutionPolicy Bypass -NoProfile -Command \"$max=300;$w=0;while($w -lt $max){$p=Get-Process TiWorker,TrustedInstaller,msiexec -ErrorAction SilentlyContinue;if(-not $p){break};Start-Sleep 5;$w+=5};shutdown /s /t 10 /f\"" /f >> C:\\windows_setup.log 2>&1
+
 echo === Setup Complete === >> C:\\windows_setup.log 2>&1
 """
 
@@ -219,8 +236,8 @@ def generate_unattend_xml(
         </SynchronousCommand>
         <SynchronousCommand wcm:action="add">
           <Order>2</Order>
-          <Description>Signal installation complete by shutting down</Description>
-          <CommandLine>cmd.exe /c shutdown /s /t 10 /f</CommandLine>
+          <Description>Reboot to finalize drivers and clear pending updates</Description>
+          <CommandLine>cmd.exe /c shutdown /r /t 5 /f</CommandLine>
         </SynchronousCommand>
       </FirstLogonCommands>
       <TimeZone>{time_zone}</TimeZone>

@@ -1,14 +1,16 @@
-"""Console and screen viewer controller for QEMU VMs."""
-
+import os
 import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+
+from windows.qemu import connect_socket, is_tcp_endpoint
 
 
 class ConsoleError(RuntimeError):
@@ -76,7 +78,11 @@ class ScreenRecorder:
         if self.is_recording:
             return self
 
-        if not self.console.monitor_socket_path or not self.console.monitor_socket_path.exists():
+        has_mon = self.console.monitor_socket_path is not None and (
+            is_tcp_endpoint(self.console.monitor_socket_path)
+            or (isinstance(self.console.monitor_socket_path, Path) and self.console.monitor_socket_path.exists())
+        )
+        if not has_mon:
             raise ConsoleError(
                 f"Cannot record video: QEMU monitor socket is not connected or active: {self.console.monitor_socket_path}"
             )
@@ -263,6 +269,10 @@ class ConsoleController:
         "virt-viewer",
         "spicy",
         "bvnc",
+        "vncviewer.exe",
+        "tigervnc.exe",
+        "tvnviewer.exe",
+        "UltraVNC.exe",
     ]
 
     def __init__(
@@ -270,12 +280,17 @@ class ConsoleController:
         host: str = "127.0.0.1",
         port: int = 5900,
         display_index: int = 0,
-        monitor_socket_path: str | Path | None = None,
+        monitor_socket_path: Any | None = None,
     ):
         self.host = host
         self.port = port
         self.display_index = display_index
-        self.monitor_socket_path = Path(monitor_socket_path).resolve() if monitor_socket_path else None
+        if monitor_socket_path is not None and is_tcp_endpoint(monitor_socket_path):
+            self.monitor_socket_path = monitor_socket_path
+        elif monitor_socket_path:
+            self.monitor_socket_path = Path(monitor_socket_path).resolve()
+        else:
+            self.monitor_socket_path = None
         self._viewer_process: subprocess.Popen | None = None
         self._monitor_lock = threading.Lock()
 
@@ -284,13 +299,19 @@ class ConsoleController:
         """Return VNC connection details."""
         return ConsoleInfo(host=self.host, port=self.port, display_index=self.display_index)
 
+    def _has_monitor(self) -> bool:
+        """Return True if monitor endpoint is configured and active."""
+        if self.monitor_socket_path is None:
+            return False
+        if is_tcp_endpoint(self.monitor_socket_path):
+            return True
+        return isinstance(self.monitor_socket_path, Path) and self.monitor_socket_path.exists()
+
     def _dump_screen_ppm(self, ppm_path: Path) -> None:
         """Send screendump command to QEMU monitor socket."""
         ppm_path = Path(ppm_path).resolve()
         with self._monitor_lock:
-            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-                s.settimeout(3.0)
-                s.connect(str(self.monitor_socket_path))
+            with connect_socket(self.monitor_socket_path, timeout=3.0) as s:
                 try:
                     s.recv(1024)
                 except Exception:
@@ -307,7 +328,7 @@ class ConsoleController:
             output_path = output_path.with_suffix(".png")
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        if not self.monitor_socket_path or not self.monitor_socket_path.exists():
+        if not self._has_monitor():
             raise ConsoleError(f"QEMU monitor socket is not connected or active: {self.monitor_socket_path}")
 
         ppm_path = output_path.with_suffix(".tmp.ppm")
@@ -348,29 +369,53 @@ class ConsoleController:
         """
         return ScreenRecorder(console=self, output_path=output_path, fps=fps)
 
-    def send_monitor_command(self, command: str, timeout: float = 3.0) -> str:
+    def send_monitor_command(self, command: str, timeout: float = 5.0) -> str:
         """Send a raw HMP command string to the QEMU monitor socket and return output."""
-        if not self.monitor_socket_path or not self.monitor_socket_path.exists():
+        if not self._has_monitor():
             raise ConsoleError(f"QEMU monitor socket is not connected or active: {self.monitor_socket_path}")
 
         output = ""
         with self._monitor_lock:
-            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-                s.settimeout(timeout)
-                s.connect(str(self.monitor_socket_path))
+            with connect_socket(self.monitor_socket_path, timeout=timeout) as s:
+                # Drain initial banner or prompt
+                s.settimeout(0.15)
                 try:
-                    s.recv(1024)
+                    while True:
+                        if not s.recv(4096):
+                            break
                 except Exception:
                     pass
 
                 cmd = command.strip() + "\n"
                 s.sendall(cmd.encode("utf-8"))
-                time.sleep(0.2)
-                try:
-                    data = s.recv(4096)
-                    output = data.decode("utf-8", errors="replace")
-                except Exception:
-                    output = ""
+
+                chunks: list[bytes] = []
+                start_time = time.time()
+                s.settimeout(0.2)
+                while time.time() - start_time < timeout:
+                    try:
+                        chunk = s.recv(4096)
+                        if not chunk:
+                            break
+                        chunks.append(chunk)
+                        decoded = b"".join(chunks).decode("utf-8", errors="replace")
+                        if "\n(qemu)" in decoded or "\r\n(qemu)" in decoded or decoded.rstrip().endswith("(qemu)"):
+                            break
+                    except TimeoutError:
+                        if chunks:
+                            break
+                    except Exception:
+                        break
+
+                raw = b"".join(chunks).decode("utf-8", errors="replace")
+                lines = raw.replace("\r\n", "\n").split("\n")
+                if lines and lines[-1].strip() == "(qemu)":
+                    lines.pop()
+                elif lines and lines[-1].endswith("(qemu)"):
+                    lines[-1] = lines[-1][:-6]
+                if lines:
+                    lines.pop(0)
+                output = "\n".join(lines).strip()
 
         return output
 
@@ -401,6 +446,17 @@ class ConsoleController:
             path = shutil.which(viewer)
             if path:
                 return path
+        if sys.platform == "win32":
+            candidates = [
+                Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "TigerVNC" / "vncviewer.exe",
+                Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "TightVNC" / "tvnviewer.exe",
+                Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "uvnc bvba" / "UltraVNC" / "vncviewer.exe",
+                Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "TigerVNC" / "vncviewer.exe",
+                Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "TightVNC" / "tvnviewer.exe",
+            ]
+            for candidate in candidates:
+                if candidate.exists():
+                    return str(candidate)
         return None
 
     def _wait_for_vnc_port(self, timeout: float = 5.0) -> bool:

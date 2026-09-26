@@ -4,6 +4,7 @@ import os
 import shutil
 import struct
 import subprocess
+import sys
 import tempfile
 import time
 import uuid
@@ -23,6 +24,20 @@ def _find_binary(name: str) -> str | None:
     path = shutil.which(name)
     if path:
         return path
+    if sys.platform == "win32":
+        path = shutil.which(name + ".exe")
+        if path:
+            return path
+        candidates = [
+            Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "7-Zip" / f"{name}.exe",
+            Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "7-Zip" / f"{name}.exe",
+            Path(r"C:\ProgramData\chocolatey\bin") / f"{name}.exe",
+            Path.home() / "scoop" / "shims" / f"{name}.exe",
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                return str(candidate)
+        return None
     for d in ("/usr/bin", "/usr/sbin", "/bin", "/sbin", "/usr/local/bin", "/usr/local/sbin"):
         candidate = Path(d) / name
         if candidate.exists() and os.access(candidate, os.X_OK):

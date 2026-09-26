@@ -8,6 +8,7 @@ import shutil
 import socket
 import struct
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -16,7 +17,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
-from windows.qemu import find_free_port
+from windows.qemu import connect_socket, find_free_port, is_tcp_endpoint
 
 if TYPE_CHECKING:
     from windows.machine import Machine
@@ -24,6 +25,13 @@ if TYPE_CHECKING:
 
 class NetworkError(RuntimeError):
     """Exception raised for network controller or configuration errors."""
+
+
+def is_root() -> bool:
+    """Return True if running as root on a POSIX system."""
+    if sys.platform != "win32" and hasattr(os, "geteuid"):
+        return os.geteuid() == 0
+    return False
 
 
 class NICModel(StrEnum):
@@ -52,51 +60,53 @@ def normalize_mac(mac: str) -> str:
 
 
 class QMPClient:
-    """Client for executing structured JSON commands over QEMU Machine Protocol (QMP) UNIX socket."""
+    """Client for executing structured JSON commands over QEMU Machine Protocol (QMP) socket."""
 
-    def __init__(self, socket_path: Path | str):
-        self.socket_path = Path(socket_path)
+    def __init__(self, socket_path: Any):
+        if is_tcp_endpoint(socket_path):
+            self.endpoint = socket_path
+            self.socket_path = socket_path
+        else:
+            self.socket_path = Path(socket_path)
+            self.endpoint = self.socket_path
 
     def execute(self, command: str, arguments: dict[str, Any] | None = None, timeout: float = 5.0) -> dict[str, Any]:
         """Send a QMP command and return the parsed JSON return object."""
-        if not self.socket_path.exists():
+        if isinstance(self.socket_path, Path) and not self.socket_path.exists():
             raise NetworkError(f"QMP socket does not exist or VM is not running: {self.socket_path}")
 
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-            s.settimeout(timeout)
-            try:
-                s.connect(str(self.socket_path))
-            except OSError as exc:
-                raise NetworkError(f"Failed to connect to QMP socket at {self.socket_path}: {exc}") from exc
+        try:
+            with connect_socket(self.endpoint, timeout=timeout) as s:
+                f = s.makefile("r", encoding="utf-8")
+                # 1. Read QMP greeting banner: {"QMP": ...}
+                f.readline()
 
-            f = s.makefile("r", encoding="utf-8")
-            # 1. Read QMP greeting banner: {"QMP": ...}
-            f.readline()
+                # 2. Negotiate capabilities
+                s.sendall(json.dumps({"execute": "qmp_capabilities"}).encode("utf-8") + b"\n")
+                f.readline()
 
-            # 2. Negotiate capabilities
-            s.sendall(json.dumps({"execute": "qmp_capabilities"}).encode("utf-8") + b"\n")
-            f.readline()
+                # 3. Execute requested command
+                payload: dict[str, Any] = {"execute": command}
+                if arguments:
+                    payload["arguments"] = arguments
+                s.sendall(json.dumps(payload).encode("utf-8") + b"\n")
 
-            # 3. Execute requested command
-            payload: dict[str, Any] = {"execute": command}
-            if arguments:
-                payload["arguments"] = arguments
-            s.sendall(json.dumps(payload).encode("utf-8") + b"\n")
-
-            # 4. Read response
-            while True:
-                line = f.readline()
-                if not line:
-                    break
-                try:
-                    data = json.loads(line)
-                    if "return" in data:
-                        return data["return"]
-                    if "error" in data:
-                        err_desc = data["error"].get("desc", str(data["error"]))
-                        raise NetworkError(f"QMP command '{command}' failed: {err_desc}")
-                except json.JSONDecodeError:
-                    continue
+                # 4. Read response
+                while True:
+                    line = f.readline()
+                    if not line:
+                        break
+                    try:
+                        data = json.loads(line)
+                        if "return" in data:
+                            return data["return"]
+                        if "error" in data:
+                            err_desc = data["error"].get("desc", str(data["error"]))
+                            raise NetworkError(f"QMP command '{command}' failed: {err_desc}")
+                    except json.JSONDecodeError:
+                        continue
+        except OSError as exc:
+            raise NetworkError(f"Failed to connect to QMP socket at {self.endpoint}: {exc}") from exc
 
         return {}
 
@@ -178,11 +188,12 @@ class PacketCapture:
                     self._process.kill()
                     self._process.wait(timeout=2.0)
                 except Exception:
-                    try:
-                        subprocess.run(["kill", "-9", str(self._process.pid)], capture_output=True)
-                        self._process.wait(timeout=1.0)
-                    except Exception:
-                        pass
+                    if sys.platform != "win32":
+                        try:
+                            subprocess.run(["kill", "-9", str(self._process.pid)], capture_output=True)
+                            self._process.wait(timeout=1.0)
+                        except Exception:
+                            pass
             self._process = None
 
         if self._wireshark_proc is not None:
@@ -196,6 +207,10 @@ class PacketCapture:
     def wireshark(self) -> subprocess.Popen | None:
         """Launch Wireshark to inspect the captured packets."""
         ws_bin = shutil.which("wireshark")
+        if not ws_bin and sys.platform == "win32":
+            candidate = Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Wireshark" / "wireshark.exe"
+            if candidate.exists():
+                ws_bin = str(candidate)
         if not ws_bin:
             return None
 
@@ -508,9 +523,7 @@ class VirtualSwitch:
 
     def _can_create_linux_bridge(self) -> bool:
         """Return True if user has permissions to create a Linux bridge."""
-        if os.geteuid() == 0:
-            return True
-        return False
+        return is_root()
 
     def _setup_linux_bridge(self) -> None:
         """Create Linux kernel bridge using ip link."""
@@ -633,7 +646,7 @@ class VirtualSwitch:
             tool = shutil.which("tcpdump") or shutil.which("dumpcap")
             if tool:
                 cmd = [tool, "-i", self.bridge_name, "-w", str(output_path), "-U"]
-                if "tcpdump" in tool and os.geteuid() == 0:
+                if "tcpdump" in tool and is_root():
                     cmd.extend(["-Z", "root"])
                 proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 return PacketCapture(output_path=output_path, process=proc, live=live)
@@ -827,7 +840,7 @@ class NetworkController:
                 netdev_args["udp"] = f"127.0.0.1:{switch.switch_port}"
                 netdev_args["localaddr"] = f"127.0.0.1:{client_port}"
             elif switch.mode == "bridge":
-                if os.geteuid() == 0:
+                if is_root():
                     tap_name = switch.create_tap_device(prefix=nic_id)
                     netdev_args["type"] = "tap"
                     netdev_args["ifname"] = tap_name
@@ -954,7 +967,7 @@ class NetworkController:
 
         output_path = Path(output_path).resolve()
         cmd = [tool, "-i", interface, "-w", str(output_path), "-U"]
-        if "tcpdump" in tool and os.geteuid() == 0:
+        if "tcpdump" in tool and is_root():
             cmd.extend(["-Z", "root"])
         proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return PacketCapture(output_path=output_path, process=proc, live=live)

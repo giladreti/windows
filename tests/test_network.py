@@ -349,4 +349,3 @@ def test_multiple_machines_distinct_vnc_ports(tmp_path):
     assert m1.vnc_display != m2.vnc_display
     m1.close()
     m2.close()
-

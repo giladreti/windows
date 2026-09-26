@@ -1,5 +1,6 @@
 """Advanced unit tests for windows error handling, mock QEMU execution, and pipeline edge cases."""
 
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -145,6 +146,8 @@ def test_qemu_process_manager_mock():
 
         manager.start()
         assert manager.is_running()
+        if sys.platform != "win32":
+            assert mock_popen.call_args[1].get("start_new_session") is True
 
         mock_proc.poll.return_value = None
         manager.stop()
