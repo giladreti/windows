@@ -8,6 +8,7 @@ authors = [
 ]
 requires-python = ">=3.13"
 dependencies = [
+    "impacket>=0.13.1",
     "pillow>=10.0.0",
     "pycdlib>=1.20.0",
     "pydantic>=2.13.4",
@@ -16,7 +17,7 @@ dependencies = [
 ]
 
 [build-system]
-requires = ["uv_build>=0.11.18,<0.12.0"]
+requires = ["uv_build>=0.11.18,<0.14.0"]
 build-backend = "uv_build"
 
 [dependency-groups]
@@ -28,10 +29,16 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["src"]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "nested: marks tests for nested virtualization",
+]
 
 [tool.ruff]
 line-length = 120
 target-version = "py313"
+extend-exclude = ["scratch"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "RUF"]
