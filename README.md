@@ -7,11 +7,19 @@ Automated, hands-free Windows QEMU virtual machine provisioning, instant base im
 ## 🌟 Key Features
 
 - ⚡ **Instant QEMU Disk Overlays**: Creates thin Copy-on-Write `.qcow2` overlay disks (~200 KB) backing cached base images in milliseconds. Auto-generates unique randomized filenames if omitted.
-- 🔌 **Pure Out-of-Band QEMU Guest Agent (QGA)**: 100% networkless, zero TCP ports, zero firewall dependencies. Communicates directly over the hypervisor VirtIO serial channel (`\\.\Global\org.qemu.guest_agent.0` <-> Host UNIX domain socket).
+- 🌲 **Image Overlay Branching (`Image.from_base`)**: Create instant diff overlays branching off any existing base Windows disk image without copying.
+- 🔌 **Pure Out-of-Band QEMU Guest Agent (QGA)**: 100% networkless, zero TCP ports, zero firewall dependencies. Communicates directly over the hypervisor VirtIO serial channel (`\\.\Global\org.qemu.guest_agent.0` <-> Host UNIX domain socket or loopback TCP).
+- 👤 **User Execution Contexts (`as_user`)**: Run commands under specific Windows user accounts with password authentication using scoped context managers (`with machine.as_user(): ...`), controller views, or explicit arguments.
 - 🧩 **High-Level Typed Windows Subsystems**:
   - **`machine.processes`**: List, inspect, and kill running Windows processes (`PID`, `Name`, `CPU`, `WorkingSet MB`).
   - **`machine.registry`**: Query, set, and delete keys and values across `HKLM`, `HKCU`, etc.
   - **`machine.services`**: Inspect, start, stop, restart, and configure startup types for Windows services.
+  - **`machine.firewall`**: Manage Windows Defender Firewall rules, profiles, and per-adapter categories.
+- 💾 **USB Flash Drive Emulation (`machine.usb`)**: Create MBR-partitioned FAT32 disk images on the host and hotplug them into running Windows VMs with automatic drive letter assignment and safe unmounting.
+- 💿 **CD-ROM & ISO Media Management (`machine.cd`)**: Create ISO 9660 / Joliet filesystem images on the host and insert/eject them dynamically in the VM's CD-ROM drive.
+- 🎙️ **Virtual Microphone Emulation (`machine.microphone`)**: Feed audio from any host WAV or MP3 file into the guest VM's virtual microphone input, and record/verify captured audio directly from Windows.
+- ⏪ **Time Travel Debugging (TTD) & Deterministic Replay (`machine.ttd`)**: Record deterministic instruction-level execution sessions and replay them with forward and reverse stepping, bookmarks, exact seeking, and GDB/`ntoseye` inspection.
+- 📁 **Shared Folders via SMB (`machine.file.share`)**: Mount host directories directly as Windows guest drive letters (e.g., `Z:`) over local SMB with zero host administrative privileges.
 - 📸 **Live & Offline Snapshots (`machine.snapshot`)**:
   - Take live snapshots (`savevm`) saving RAM + disk state, or offline disk snapshots.
   - Instant rollback to any snapshot checkpoint (`machine.snapshot.revert()`).
@@ -37,7 +45,7 @@ Automated, hands-free Windows QEMU virtual machine provisioning, instant base im
 - 🦈 **Packet Capture & Live Wireshark (`nic.capture()`, `switch.capture()`)**:
   - Direct Layer 2/3 packet capture to `.pcap` files using QEMU's `filter-dump` subsystem without host root permissions.
   - Live traffic inspection via Wireshark (`nic.wireshark()`).
-- 📸 **Live Screen Capture**: Capture live high-resolution PNG screenshots of the VM display directly over the QEMU monitor socket.
+- 📸 **Live Screen Capture & Recording**: Capture live high-resolution PNG screenshots or MP4 videos of the VM display directly over the QEMU monitor socket.
 
 ---
 
