@@ -23,3 +23,6 @@ wheels/
 
 # Cache directories
 .cache/
+.ttd_recordings/
+scratch/
+System Volume Information/

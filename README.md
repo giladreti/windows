@@ -102,9 +102,42 @@ local_dir = Path("./local_assets")
 remote_dir = machine.file.path(r"C:\Users\Public\assets")
 remote_dir.upload(local_dir, exist_policy="overwrite")
 
-# 7. Clean shutdown
+# 7. Hotplug Shared Folders directly as a guest drive letter (e.g. Z:)
+with machine.file.share(from="./my_project", to="Z:") as share:
+    res = machine.command.run("dir Z:\\")
+    print(res.stdout)
+
+# 8. Clean shutdown
 machine.power.off()
 ```
+
+---
+
+## 👤 User Execution Contexts (`as_user`)
+
+By default, commands run via QGA execute with `NT AUTHORITY\SYSTEM` privileges. You can run commands as specific users (e.g., `Administrator`) with password authentication using scoped context managers, controller views, or explicit arguments:
+
+```python
+# 1. Scoped execution block: all commands inside automatically run as Administrator
+with machine.as_user():
+    res = machine.command.run("whoami")
+    print(res.stdout)  # -> desktop-xxxx\administrator
+
+    # Internal subsystems or commands can bypass user scoping when needed:
+    sys_res = machine.command.run("whoami", as_system=True)  # -> nt authority\system
+
+# Outside context manager, execution automatically returns to SYSTEM:
+print(machine.command.run("whoami").stdout)  # -> nt authority\system
+
+# 2. Factory / View execution
+admin = machine.as_user()
+admin.run("whoami")  # -> desktop-xxxx\administrator
+
+# 3. Explicit single command execution with credentials
+machine.command.run("whoami", user="Administrator", password="Password123!")
+```
+
+See [`examples/user_execution.py`](examples/user_execution.py) for a complete example.
 
 ---
 
@@ -193,6 +226,141 @@ machine.debug(
 # Attach WinDbg-compatible REPL from your host terminal:
 # --> ntoseye -b gdb --connect localhost:1234
 ```
+
+---
+
+## ⏪ Time Travel Debugging (TTD) & Deterministic Replay
+
+Record deterministic instruction-level execution sessions and replay them with forward and reverse stepping, bookmarks, exact seeking, and GDB/`ntoseye` inspection:
+
+```python
+from windows import ISO, Image, Machine, WindowsVersion
+
+iso = ISO.from_version(WindowsVersion.WIN10_22H2)
+image = Image.from_iso(iso, output_disk="ttd_vm.qcow2", use_cache=True)
+
+with Machine(image, ttd=True) as machine:
+    machine.power.on()
+    machine.wait_for_boot()
+
+    # 1. Record deterministic execution block
+    with machine.record_session("exploit_trace") as recording:
+        print(f"Tracing to: {recording.trace_path}")
+        res = machine.command.run("whoami", powershell=False)
+        print("Guest output:", res.stdout.strip())
+
+    # 2. Replay with reverse stepping and bookmarks
+    with machine.ttd.replay("exploit_trace") as session:
+        # Step forward 5 instructions
+        session.step(count=5)
+        bm = session.add_bookmark("step5")
+
+        # Step backward in time (reverse execution)
+        session.reverse_step(count=3)
+
+        # Deterministic seek to an exact instruction count
+        session.seek(icount=100)
+        session.goto_bookmark("step5")
+
+# Attach GDB for reverse debugging:
+# --> gdb -ex 'target remote localhost:<port>' -> reverse-stepi, reverse-continue
+# Attach ntoseye for kernel object inspection:
+# --> ntoseye -b gdb --connect localhost:<port> -> !process 0 0, k, dt nt!_IRP
+```
+See [`docs/time_travel_debugging.md`](docs/time_travel_debugging.md) for architecture, troubleshooting, and constraints.
+
+---
+
+## 🪟 Windows Host Compatibility
+
+`windows` runs seamlessly on **Windows host machines** (as well as Linux and macOS):
+
+- **Automatic `qemu.exe` Discovery**: Scans `PATH`, `C:\Program Files\qemu`, `%LOCALAPPDATA%\Programs\qemu`, Chocolatey, and Scoop.
+- **Hardware Acceleration**: Automatically selects Windows Hypervisor Platform (`-accel whpx`) when available, falling back to multi-threaded TCG (`-accel tcg`).
+- **Loopback TCP Sockets**: Because Windows lacks Unix domain socket parity in QEMU, IPC endpoints (QGA, QEMU Monitor, QMP) use automatically allocated loopback TCP ports (`127.0.0.1:<port>`).
+- **Terminal Integration**: `machine.debug()` automatically opens Windows Terminal (`wt.exe`), PowerShell, or `cmd.exe`.
+- **Shared Folders**: Mount host folders inside the guest as drive letters using `machine.file.share(from=host_path, to="Z:")`.
+
+---
+
+## 🔌 USB Flash Drive Emulation (`machine.usb`)
+
+Create virtual disk images on the host and hotplug them as USB flash storage into a running Windows VM:
+
+```python
+from windows import Machine, create_usb_disk
+
+# 1. Create formatted FAT32 USB disk image on host with pre-populated files
+usb_img = create_usb_disk(
+    path="my_flash_drive.img",
+    size="64M",
+    filesystem="fat32",
+    label="MYUSB",
+    files={"payload.txt": b"Hello from Host via USB!\n"},
+)
+
+# 2. Hotplug into running Windows VM
+with machine.usb.mount(usb_img, to="E:") as usb_dev:
+    print(f"Mounted USB device on Windows drive {usb_dev.drive_letter}")
+    output = machine.command.run(f"Get-Content {usb_dev.drive_letter}\\payload.txt")
+    print(output.stdout)
+
+# Cleanly unmounted and removed upon exiting context
+```
+
+See [`examples/usb_storage.py`](examples/usb_storage.py) for details.
+
+---
+
+## 💿 CD-ROM Drive & ISO Media (`machine.cd`)
+
+Create ISO 9660 / Joliet filesystem images on the host and insert them into the VM's CD-ROM drive:
+
+```python
+from windows import Machine, create_cdrom_iso
+
+# 1. Create ISO image on host
+cd_iso = create_cdrom_iso(
+    path="install.iso",
+    label="SETUP_DISC",
+    files={"setup.exe": b"\x90\x90...", "readme.txt": "Installer notes\n"},
+)
+
+# 2. Insert disc into CD-ROM drive
+with machine.cd.insert(cd_iso, to="D:") as cd_dev:
+    print(f"Inserted CD-ROM on drive {cd_dev.drive_letter}")
+    res = machine.command.run(f"dir {cd_dev.drive_letter}\\")
+    print(res.stdout)
+
+# Disc automatically ejected upon exiting context
+```
+
+See [`examples/cdrom_media.py`](examples/cdrom_media.py) for details.
+
+---
+
+## 🎙️ Virtual Microphone Audio Emulation (`machine.microphone`)
+
+Feed audio from any host WAV or MP3 file into the guest VM's virtual microphone input, and record/verify the captured audio from inside Windows:
+
+```python
+from windows import Machine, analyze_wav_data, create_sine_wav
+
+# 1. Prepare audio tone or provide an MP3/WAV file
+tone = create_sine_wav("tone.wav", duration_sec=5.0, frequency=440.0)
+
+# 2. Attach virtual microphone and stream audio into guest
+with machine.microphone.emulate(tone, loop=True) as mic:
+    # Record live audio from inside the Windows guest
+    recorded_wav = machine.microphone.record_guest(duration_sec=3.0)
+
+    # Inspect signal to verify audio capture
+    stats = analyze_wav_data(recorded_wav)
+    print(f"Recorded {stats['duration_sec']:.2f}s, max amplitude: {stats['max_amplitude']}")
+    assert not stats["is_silent"], "Captured non-silent tone!"
+```
+
+See [`examples/microphone_audio.py`](examples/microphone_audio.py) for details.
 
 ---
 

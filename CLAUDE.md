@@ -25,6 +25,7 @@ windows/
 │       ├── console.py       # VNC console launcher, screendump, & QEMU HMP monitor client
 │       ├── executor.py      # CommandController for guest command execution via QGA
 │       ├── file.py          # FileController & RemotePath (pathlib-style remote file & directory ops)
+│       ├── firewall.py      # FirewallController & FirewallRule for Windows Defender Firewall
 │       ├── image.py         # Image representation and Image.from_iso provisioning logic
 │       ├── iso.py           # Windows ISO downloading, resolving, hashing, and caching
 │       ├── machine.py       # Machine instance, PowerController, machine.run(), machine.debug()
@@ -35,19 +36,24 @@ windows/
 │       ├── registry.py      # RegistryController (get, set, delete registry keys and values)
 │       ├── services.py      # ServiceController & ServiceInfo (list, start, stop, restart services)
 │       ├── snapshot.py      # SnapshotController & SnapshotInfo (create, revert, list, and fork snapshots)
+│       ├── ttd.py           # Time Travel Debugging (TTDController, TTDRecording, TTDReplaySession)
 │       └── unattend.py      # Autounattend.xml generation, setup.cmd, and secondary ISO builder
-├── tests/                   # Mocked, ultra-fast unit test suite (90 tests)
+├── docs/
+│   └── time_travel_debugging.md # Comprehensive TTD guide and troubleshooting reference
+├── tests/                   # Mocked, ultra-fast unit test suite (120 tests)
 │   ├── test_abstractions.py # Process, Registry, Service, and random output_disk tests
 │   ├── test_advanced.py     # Cache, ISO resolution, and edge case tests
 │   ├── test_cache.py        # ISO and image overlay caching verification
 │   ├── test_console.py      # VNC launcher, screenshot, and monitor tests
 │   ├── test_disk.py         # Offline disk analysis and image.file tests
 │   ├── test_file_ops.py     # RemotePath directory upload, download, and exist_policy tests
+│   ├── test_firewall.py     # Firewall rule creation, listing, filtering, and deletion tests
 │   ├── test_machine_debug.py # machine.debug() and machine.run() tests
 │   ├── test_network.py      # Virtual networking, NIC hotplug, IP config, VirtualSwitch, packet capture tests
 │   ├── test_oop_interfaces.py # ISO, Image, Machine canonical interface tests
 │   ├── test_qga.py          # QGA JSON-RPC protocol and file streaming tests
 │   ├── test_snapshots.py    # SnapshotController lifecycle and machine forking tests
+│   ├── test_ttd.py          # TTD record/replay, GDB client, bookmarks, and restrictions tests
 │   ├── test_windows.py      # Core workflow unit tests
 │   └── test_working_machine.py # Machine instance creation tests
 ├── tests_e2e/               # Optional live end-to-end integration tests
@@ -58,6 +64,7 @@ windows/
 │   ├── offline_disk_analysis.py # Offline disk and image.file analysis example
 │   ├── remote_file_ops.py   # Path-style file & directory transfers example
 │   ├── snapshot_management.py # Snapshot management and machine forking example
+│   ├── time_travel_debugging.py # Deterministic TTD record & replay with GDB reverse stepping
 │   ├── video_recording.py   # Console screen recording example
 │   └── virtual_networking.py # Virtual networking, NIC hotplug, IP config, VirtualSwitch, packet capture example
 ├── pyproject.toml           # Project metadata, dependencies, ruff & ty configuration
@@ -227,4 +234,58 @@ remote_dir.download_dir(local_target_dir, exist_policy="overwrite")
   - `with switch.capture("switch.pcap") as cap:`: Captures all switch traffic to `.pcap`.
   - `switch.wireshark()`: Launches live Wireshark on switch.
   - `switch.destroy()`: Tears down switch and cleans up sockets/bridge.
+
+### 11. `windows.firewall` (`machine.firewall`, `FirewallRule`)
+`machine.firewall` manages Windows Defender Firewall inbound and outbound rules over QGA:
+- `machine.firewall.list()`: Returns `list[FirewallRule]` (Name, Direction, Action, Enabled, Protocol, LocalPort, RemotePort).
+- `machine.firewall.add(name, direction="Inbound", action="Allow", protocol="TCP", port=80)`: Creates a new firewall rule.
+- `machine.firewall.remove(name)`: Removes a rule by name.
+- `machine.firewall.enable(name)` / `machine.firewall.disable(name)`: Toggle rules.
+
+### 12. `windows.ttd` (`machine.ttd`, `machine.record_session`, `TTDController`, `TTDRecording`, `TTDReplaySession`)
+Deterministic Time Travel Debugging (TTD) subsystem leveraging QEMU's instruction counter and record/replay engine (`-icount rr=record` / `-icount rr=replay`):
+- **Deterministic Recording Context Manager**:
+  ```python
+  with machine.record_session("exploit_run") as recording:
+      # Use machine.command.run directly inside the block
+      res = machine.command.run("whoami", powershell=False)
+      print(res.stdout)
+  # Automatically flushes replay log headers and finalizes metadata on exit via SIGINT
+  ```
+- **Deterministic Replay Session**:
+  ```python
+  with machine.ttd.replay("exploit_run") as session:
+      # Step forward/backward in instructions
+      session.step(count=5)
+      session.reverse_step(count=3)
+      # Bookmarking
+      bm = session.add_bookmark("checkpoint1")
+      session.goto_bookmark("checkpoint1")
+      # Deterministic seeking to exact instruction count
+      session.seek(icount=100)
+  ```
+- **Debugger Attachment**:
+  - GDB Remote Protocol: `target remote localhost:<session.gdb_port>`, supporting `reverse-stepi`, `reverse-continue`, and hardware watchpoints.
+  - `ntoseye` WinDbg: `ntoseye -b gdb --connect localhost:<session.gdb_port>` for kernel symbol and object inspection (`!process 0 0`, `k`, `r`, `dt nt!_IRP`).
+- **Core TTD Constraints & Fixes**:
+  - Requires single vCPU (`cpus=1`) and TCG software emulation (`enable_kvm=False`).
+  - QEMU strictly enforces `-rtc base=utc`. The Windows base image has `RealTimeIsUniversal = 1` set in `HKLM\SYSTEM\CurrentControlSet\Control\TimeZoneInformation` to natively align with UTC RTC.
+  - Virtual USB devices (`-device qemu-xhci -device usb-tablet`) are excluded in TTD mode to prevent BugCheck `0x9F` (`DRIVER_POWER_STATE_FAILURE`) caused by USB selective suspend watchdog timeouts under software emulation. Standard emulated PS/2 devices (`i8042`) are used instead.
+
+### 13. `windows.usb` (`machine.usb`, `create_usb_disk`, `USBController`, `USBDevice`)
+Emulated USB flash drive storage:
+- `create_usb_disk(path, size="64M", filesystem="fat32", label="USB", files=...)`: Creates an MBR-partitioned FAT32 raw disk image on the host.
+- `with machine.usb.mount(disk_path, to="E:") as dev:`: Hotplugs USB storage into the VM, discovers the drive in Windows, and cleanly unmounts upon exit.
+
+### 14. `windows.cd` (`machine.cd`, `create_cdrom_iso`, `CDController`, `CDDevice`)
+Emulated CD-ROM drive and ISO media:
+- `create_cdrom_iso(path, label="CDROM", files=...)`: Creates an ISO 9660 / Joliet filesystem image on the host using `pycdlib`.
+- `with machine.cd.insert(iso_path, to="D:") as cd:`: Inserts CD-ROM media into the VM drive and cleanly ejects upon exit.
+
+### 15. `windows.audio` (`machine.microphone`, `create_sine_wav`, `analyze_wav_data`, `MicrophoneController`)
+Virtual microphone audio input and in-guest recording:
+- `with machine.microphone.emulate("tone.wav", loop=True) as mic:`: Attaches a virtual microphone and streams audio into the guest.
+- `machine.microphone.record_guest(duration_sec=3.0)`: Captures live audio from inside the Windows guest into a WAV file.
+- `analyze_wav_data(wav_bytes)`: Returns sample statistics, amplitude, and silence verification.
+
 
