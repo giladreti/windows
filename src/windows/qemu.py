@@ -5,6 +5,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -142,7 +143,7 @@ def format_chardev_args(chardev_id: str, endpoint: Any, server: bool = True, wai
     wait_str = "wait=on" if wait else "wait=off"
     if is_tcp_endpoint(endpoint):
         host, port = parse_tcp_endpoint(endpoint)
-        return ["-chardev", f"socket,id={chardev_id},host={host},port={port},{srv_str},{wait_str}"]
+        return ["-chardev", f"socket,id={chardev_id},host={host},port={port},{srv_str},{wait_str},nodelay=on"]
     return ["-chardev", f"socket,id={chardev_id},path={endpoint},{srv_str},{wait_str}"]
 
 
@@ -150,7 +151,7 @@ def format_monitor_args(endpoint: Any) -> list[str]:
     """Build QEMU -monitor argument list for TCP or Unix socket."""
     if is_tcp_endpoint(endpoint):
         host, port = parse_tcp_endpoint(endpoint)
-        return ["-monitor", f"tcp:{host}:{port},server,nowait"]
+        return ["-monitor", f"tcp:{host}:{port},server,nowait,nodelay=on"]
     return ["-monitor", f"unix:{endpoint},server,nowait"]
 
 
@@ -158,7 +159,7 @@ def format_qmp_args(endpoint: Any) -> list[str]:
     """Build QEMU -qmp argument list for TCP or Unix socket."""
     if is_tcp_endpoint(endpoint):
         host, port = parse_tcp_endpoint(endpoint)
-        return ["-qmp", f"tcp:{host}:{port},server,nowait"]
+        return ["-qmp", f"tcp:{host}:{port},server,nowait,nodelay=on"]
     return ["-qmp", f"unix:{endpoint},server,nowait"]
 
 
@@ -167,6 +168,10 @@ def connect_socket(endpoint: Any, timeout: float = 3.0) -> socket.socket:
     if is_tcp_endpoint(endpoint):
         host, port = parse_tcp_endpoint(endpoint)
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        except OSError:
+            pass
         s.settimeout(timeout)
         s.connect((host, port))
         return s
@@ -215,11 +220,12 @@ def create_qcow2_disk(path: Path, size: str = "50G") -> Path:
     return path
 
 
-def create_qcow2_overlay(overlay_path: Path, backing_path: Path) -> Path:
+def create_qcow2_overlay(overlay_path: Path, backing_path: Path, size: str | None = None) -> Path:
     """Create a thin qcow2 overlay that uses backing_path as a read-only base.
 
     The overlay file is tiny (~200KB) and only stores writes/diffs on top of the
     backing image. This enables instant reuse of cached base images without copying.
+    Optionally, a custom virtual size (e.g. '60G') can be specified to expand disk capacity.
     """
     overlay_path = Path(overlay_path)
     backing_path = Path(backing_path).resolve()
@@ -237,6 +243,8 @@ def create_qcow2_overlay(overlay_path: Path, backing_path: Path) -> Path:
         str(backing_path),
         str(overlay_path),
     ]
+    if size:
+        cmd.append(str(size))
     res = subprocess.run(cmd, capture_output=True, text=True)
     if res.returncode != 0:
         raise QEMUError(f"Failed to create qcow2 overlay: {res.stderr}")
@@ -339,6 +347,107 @@ def build_install_qemu_cmd(
     return cmd
 
 
+def build_xp_install_qemu_cmd(
+    disk_path: Path,
+    iso_path: Path,
+    unattend_floppy_path: Path | None = None,
+    ram_mb: int = 1024,
+    cpus: int = 2,
+    enable_kvm: bool = True,
+    headless: bool = True,
+    vnc_display: int | None = None,
+    serial_log_path: Path | None = None,
+    monitor_socket_path: Any | None = None,
+    boot_from: str = "d",
+    no_reboot: bool = True,
+) -> list[str]:
+    """Build QEMU arguments for Windows XP (NT 5.1) installation and boot phases.
+
+    Uses the legacy i440fx (`pc`) machine type with PIIX3 IDE storage because
+    XP ships no inbox AHCI driver (q35 exposes ICH9 AHCI and would BSOD with
+    0x7B). The XP install media boots from CD; the winnt.sif answer file is
+    delivered on a FAT12 floppy attached as drive A: (`-fda`), which XP's
+    cdboot polls to run both setup phases fully unattended.
+
+    Args:
+        disk_path: Target qcow2 disk path.
+        iso_path: Windows XP install ISO path.
+        unattend_floppy_path: FAT12 floppy image with WINNT.SIF (create via
+            windows.unattend.create_xp_unattend_floppy). May be None for later
+            reboot/boot phases (GUI phase reads the sif copied onto the disk).
+        ram_mb: VM RAM in megabytes (XP sweet spot: 512-2048).
+        cpus: Number of vCPUs.
+        enable_kvm: Enable KVM acceleration if supported.
+        headless: Run headless (no graphical window, VNC always available).
+        vnc_display: VNC display index (e.g. 0 -> port 5900).
+        serial_log_path: Optional path for the COM1 serial log.
+        monitor_socket_path: Optional HMP monitor socket path.
+        boot_from: Boot device order letter ('d' = CD for install phase,
+            'c' = first hard disk for the GUI phase).
+        no_reboot: Add -no-reboot so QEMU exits cleanly when setup reboots
+            (used by Image.from_xp_iso to chain the install phases).
+
+    Returns:
+        List of QEMU command line arguments.
+    """
+    cmd = [
+        find_qemu_binary(),
+        "-machine",
+        "pc",
+        "-m",
+        str(ram_mb),
+        "-smp",
+        str(cpus),
+        "-drive",
+        f"file={disk_path},format=qcow2,if=ide,index=0,media=disk",
+        "-cdrom",
+        str(iso_path),
+    ]
+
+    if unattend_floppy_path:
+        cmd.extend(["-fda", str(unattend_floppy_path)])
+
+    cmd.extend(
+        [
+            "-boot",
+            f"order={boot_from}",
+            "-netdev",
+            "user,id=net0",
+            "-device",
+            "rtl8139,netdev=net0",
+            "-rtc",
+            "base=localtime",
+        ]
+    )
+
+    if vnc_display is not None:
+        cmd.extend(["-vnc", f"127.0.0.1:{vnc_display}"])
+
+    if serial_log_path:
+        cmd.extend(["-serial", f"file:{serial_log_path}"])
+
+    if monitor_socket_path:
+        cmd.extend(format_monitor_args(monitor_socket_path))
+
+    if sys.platform == "win32":
+        if enable_kvm and is_whpx_available():
+            cmd.extend(["-accel", "whpx", "-cpu", "max"])
+        else:
+            cmd.extend(["-cpu", "qemu64"])
+    elif enable_kvm and os.path.exists("/dev/kvm"):
+        cmd.extend(["-enable-kvm", "-cpu", "host"])
+    else:
+        cmd.extend(["-cpu", "qemu64"])
+
+    if headless and vnc_display is None:
+        cmd.extend(["-display", "none"])
+
+    if no_reboot:
+        cmd.append("-no-reboot")
+
+    return cmd
+
+
 def get_host_cpu_vendor() -> str:
     """Detect host CPU vendor from /proc/cpuinfo or environment, defaulting to GenuineIntel."""
     if sys.platform == "win32":
@@ -416,6 +525,11 @@ def build_run_qemu_cmd(
     audio_backend: str | None = None,
     audio_in_name: str | None = None,
     sound_device: str | None = "intel-hda",
+    cache: str | None = None,
+    enable_network: bool = True,
+    enable_usb: bool = True,
+    machine_type: str | None = None,
+    nic_model: str | None = None,
     **kwargs,
 ) -> list[str]:
     """Build QEMU command line arguments for running an installed Windows VM."""
@@ -434,19 +548,29 @@ def build_run_qemu_cmd(
         if not rr_file:
             raise QEMUError("rr_file is required when rr_mode is set.")
 
+    machine_type = (machine_type or "q35").lower()
     cmd = [
         find_qemu_binary(),
         "-machine",
-        "q35",
-        "-global",
-        "ICH9-LPC.disable_s3=1",
-        "-global",
-        "ICH9-LPC.disable_s4=1",
-        "-m",
-        str(ram_mb),
-        "-smp",
-        str(cpus),
+        machine_type,
     ]
+    if machine_type == "q35":
+        cmd.extend(
+            [
+                "-global",
+                "ICH9-LPC.disable_s3=1",
+                "-global",
+                "ICH9-LPC.disable_s4=1",
+            ]
+        )
+    cmd.extend(
+        [
+            "-m",
+            str(ram_mb),
+            "-smp",
+            str(cpus),
+        ]
+    )
 
     if rr_mode:
         icount_val = icount or "shift=auto"
@@ -457,7 +581,7 @@ def build_run_qemu_cmd(
     elif icount:
         cmd.extend(["-icount", icount])
 
-    cache_opt = ",cache=unsafe" if (ttd or rr_mode) else ""
+    cache_opt = f",cache={cache}" if cache else (",cache=unsafe" if (ttd or rr_mode) else "")
     if blkreplay or rr_mode:
         cmd.extend(
             [
@@ -499,54 +623,7 @@ def build_run_qemu_cmd(
             ]
         )
 
-    netdev_user = "user,id=net0"
-    if smb_guestfwd_port is not None:
-        if sys.platform == "win32":
-            netdev_user += f",guestfwd=tcp:10.0.2.4:445-tcp:127.0.0.1:{smb_guestfwd_port}"
-        elif shutil.which("nc"):
-            netdev_user += f",guestfwd=tcp:10.0.2.4:445-cmd:nc 127.0.0.1 {smb_guestfwd_port}"
-        else:
-            netdev_user += (
-                f",guestfwd=tcp:10.0.2.4:445-cmd:{sys.executable} -m windows.smb pipe 127.0.0.1 {smb_guestfwd_port}"
-            )
-
-    cmd.extend(
-        [
-            "-boot",
-            "order=c",
-            "-netdev",
-            netdev_user,
-            "-device",
-            "e1000,netdev=net0,id=nic0,mac=52:54:00:12:34:50",
-        ]
-    )
-
-    if filter_replay or rr_mode:
-        cmd.extend(["-object", "filter-replay,id=flt0,netdev=net0"])
-
-    if not (ttd or rr_mode):
-        cmd.extend(
-            [
-                "-device",
-                "qemu-xhci",
-                "-device",
-                "usb-tablet",
-            ]
-        )
-        if usb_drives:
-            for idx, usb_disk in enumerate(usb_drives):
-                p = Path(usb_disk).resolve()
-                fmt = "qcow2" if p.suffix.lower() == ".qcow2" else "raw"
-                cmd.extend(
-                    [
-                        "-drive",
-                        f"file={p},format={fmt},if=none,id=boot_usb_drv_{idx}",
-                        "-device",
-                        f"usb-storage,drive=boot_usb_drv_{idx},id=boot_usb_dev_{idx}",
-                    ]
-                )
-
-    if not (ttd or rr_mode):
+    if not (ttd or rr_mode) and machine_type == "q35":
         cmd.extend(
             [
                 # PCIe root ports for hotplugging PCIe devices (e1000e, virtio-net-pci, etc.)
@@ -571,6 +648,57 @@ def build_run_qemu_cmd(
                 "pcie-pci-bridge,id=pci.1,bus=pcie.0",
             ]
         )
+
+    cmd.extend(["-boot", "order=c"])
+
+    if enable_network:
+        netdev_user = "user,id=net0"
+        if smb_guestfwd_port is not None:
+            if sys.platform == "win32":
+                netdev_user += f",guestfwd=tcp:10.0.2.4:445-tcp:127.0.0.1:{smb_guestfwd_port}"
+            elif shutil.which("nc"):
+                netdev_user += f",guestfwd=tcp:10.0.2.4:445-cmd:nc 127.0.0.1 {smb_guestfwd_port}"
+            else:
+                netdev_user += (
+                    f",guestfwd=tcp:10.0.2.4:445-cmd:{sys.executable} -m windows.smb pipe 127.0.0.1 {smb_guestfwd_port}"
+                )
+
+        nic_bus_opt = ""
+        if not (ttd or rr_mode) and machine_type == "q35":
+            nic_bus_opt = ",bus=pci.1"  # attach to the PCIe-to-PCI bridge (q35 has no native legacy PCI slots)
+        nic_model = nic_model or ("rtl8139" if machine_type == "pc" else "e1000")
+        cmd.extend(
+            [
+                "-netdev",
+                netdev_user,
+                "-device",
+                f"{nic_model}{nic_bus_opt},netdev=net0,id=nic0,mac=52:54:00:12:34:50",
+            ]
+        )
+
+    if filter_replay or rr_mode:
+        cmd.extend(["-object", "filter-replay,id=flt0,netdev=net0"])
+
+    if enable_usb and not (ttd or rr_mode):
+        if machine_type == "q35":
+            cmd.extend(["-device", "qemu-xhci"])
+        else:
+            # Legacy i440fx machines cannot expose xHCI PCI devices; the
+            # XP-era UHCI (PIIX3) controller is the correct equivalent.
+            cmd.extend(["-usb"])
+        cmd.extend(["-device", "usb-tablet"])
+        if usb_drives:
+            for idx, usb_disk in enumerate(usb_drives):
+                p = Path(usb_disk).resolve()
+                fmt = "qcow2" if p.suffix.lower() == ".qcow2" else "raw"
+                cmd.extend(
+                    [
+                        "-drive",
+                        f"file={p},format={fmt},if=none,id=boot_usb_drv_{idx}",
+                        "-device",
+                        f"usb-storage,drive=boot_usb_drv_{idx},id=boot_usb_dev_{idx}",
+                    ]
+                )
 
     if ttd or rr_mode:
         cmd.extend(
@@ -649,10 +777,13 @@ def build_run_qemu_cmd(
             cmd.extend(["-device", "intel-hda", "-device", "hda-duplex,audiodev=snd0"])
         elif sound_device == "usb-audio":
             cmd.extend(["-device", "usb-audio,audiodev=snd0,id=usb_mic0"])
+        elif sound_device in ("es1370", "ac97", "sb16"):
+            # Legacy-era sound cards with XP inbox drivers
+            cmd.extend(["-device", f"{sound_device},audiodev=snd0"])
 
     if sys.platform == "win32":
         if enable_kvm and is_whpx_available():
-            cmd.extend(["-accel", "whpx", "-cpu", "max"])
+            cmd.extend(["-accel", "whpx", "-cpu", "host"])
         else:
             cmd.extend(["-accel", "tcg,tb-size=1024"])
             vendor = get_host_cpu_vendor()
@@ -680,6 +811,13 @@ class QEMUProcessManager:
         self.cmd = cmd
         self.process: subprocess.Popen | None = None
         self._kvm_fd: int | None = None
+        self.stderr_lines: list[str] = []
+        self._stderr_thread: threading.Thread | None = None
+
+    @property
+    def stderr_text(self) -> str:
+        """Return the collected stderr text so far."""
+        return "".join(self.stderr_lines)
 
     def start(self, startup_check_delay: float = 0.5) -> None:
         """Start QEMU process in background and verify it remains alive."""
@@ -708,15 +846,25 @@ class QEMUProcessManager:
         else:
             popen_kwargs["start_new_session"] = True
 
+        self.stderr_lines = []
         self.process = subprocess.Popen(self.cmd, **popen_kwargs)
+
+        def _drain_stderr(proc: subprocess.Popen) -> None:
+            try:
+                if proc.stderr:
+                    for line in iter(proc.stderr.readline, ""):
+                        self.stderr_lines.append(line)
+            except Exception:
+                pass
+
+        self._stderr_thread = threading.Thread(target=_drain_stderr, args=(self.process,), daemon=True)
+        self._stderr_thread.start()
 
         # Brief pause to verify QEMU did not crash or exit immediately
         time.sleep(startup_check_delay)
         retcode = self.process.poll()
         if retcode is not None:
-            stderr_out = ""
-            if self.process.stderr:
-                stderr_out = self.process.stderr.read()
+            stderr_out = "".join(self.stderr_lines)
             self.process.wait()  # Reap process to prevent defunct zombie state
             self.process = None
             if self._kvm_fd is not None:

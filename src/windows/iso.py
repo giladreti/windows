@@ -10,6 +10,10 @@ from tqdm import tqdm
 class WindowsVersion(StrEnum):
     """Supported Windows version enum for automated ISO download and provisioning."""
 
+    XP_SP1 = "xp_sp1"
+    XP_SP1_X64 = "xp_sp1_x64"
+    XP_SP2 = "xp_sp2"
+    XP_SP3 = "xp_sp3"
     WIN10_22H2 = "win10_22h2"
     WIN11_22H2 = "win11_22h2"
     WIN11_23H2 = "win11_23h2"
@@ -18,9 +22,47 @@ class WindowsVersion(StrEnum):
     SERVER_2022 = "server2022"
     SERVER_2025 = "server2025"
 
+    @classmethod
+    def is_xp(cls, version: "WindowsVersion | str | None") -> bool:
+        """Return True if the given version (enum member, value or alias string) is a Windows XP version."""
+        try:
+            member = _normalized_version_member(version)
+        except ValueError:
+            return False
+        return member.name.startswith("XP_")
+
+
+def _normalized_version_member(version: "WindowsVersion | str | None") -> WindowsVersion:
+    """Normalize a WindowsVersion member, canonical value, or alias string into a WindowsVersion enum member."""
+    if version is None:
+        raise ValueError("version is None")
+    if isinstance(version, WindowsVersion):
+        return version
+    value = str(version).strip().lower()
+    member = VERSION_ALIAS_MAP.get(value)
+    if member is None:
+        try:
+            member = WindowsVersion(value)
+        except ValueError:
+            raise ValueError(f"Unknown Windows version: {version!r}") from None
+    return member
+
 
 # Alias mapping from convenient user strings to canonical WindowsVersion enum members
 VERSION_ALIAS_MAP: dict[str, WindowsVersion] = {
+    "xp": WindowsVersion.XP_SP1,
+    "xp1": WindowsVersion.XP_SP1,
+    "xp_sp1": WindowsVersion.XP_SP1,
+    "winxp": WindowsVersion.XP_SP1,
+    "winxp_sp1": WindowsVersion.XP_SP1,
+    "xp_sp1_x64": WindowsVersion.XP_SP1_X64,
+    "xp64": WindowsVersion.XP_SP1_X64,
+    "xp_sp2": WindowsVersion.XP_SP2,
+    "xp2": WindowsVersion.XP_SP2,
+    "winxp_sp2": WindowsVersion.XP_SP2,
+    "xp_sp3": WindowsVersion.XP_SP3,
+    "xp3": WindowsVersion.XP_SP3,
+    "winxp_sp3": WindowsVersion.XP_SP3,
     "win10_22h2": WindowsVersion.WIN10_22H2,
     "10_22h2": WindowsVersion.WIN10_22H2,
     "win11_22h2": WindowsVersion.WIN11_22H2,
@@ -40,6 +82,18 @@ VERSION_ALIAS_MAP: dict[str, WindowsVersion] = {
 
 # Version-specific Windows Evaluation and Mirror download URLs mapped by WindowsVersion Enum
 WINDOWS_VERSION_URLS: dict[WindowsVersion, list[str]] = {
+    WindowsVersion.XP_SP1: [
+        "https://archive.org/download/windows-xp-all-sp-msdn-iso-files-en-de-ru-tr-x86-x64/en_win_xp_sp1_pro_x86_retail.iso",
+    ],
+    WindowsVersion.XP_SP1_X64: [
+        "https://archive.org/download/windows-xp-all-sp-msdn-iso-files-en-de-ru-tr-x86-x64/en_win_xp_sp1_pro_x64_vl.iso",
+    ],
+    WindowsVersion.XP_SP2: [
+        "https://archive.org/download/windows-xp-all-sp-msdn-iso-files-en-de-ru-tr-x86-x64/en_winxp_pro_with_sp2.iso",
+    ],
+    WindowsVersion.XP_SP3: [
+        "https://archive.org/download/windows-xp-all-sp-msdn-iso-files-en-de-ru-tr-x86-x64/en_windows_xp_professional_with_service_pack_3_x86_cd_x14-80428.iso",
+    ],
     WindowsVersion.WIN10_22H2: [
         "https://archive.org/download/Win10_22H2_English_x64/Win10_22H2_English_x64.iso",
         "https://software-static.download.prss.microsoft.com/sg/19045.2006.220908-0225.22h2_release_svc_refresh_CLIENTENTERPRISEEVAL_OEMRET_x64FRE_en-us.iso",

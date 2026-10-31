@@ -38,6 +38,7 @@ Automated, hands-free Windows QEMU virtual machine provisioning, instant base im
 - 📦 **Automated ISO Resolution & Unattended Setup**:
   - Download official Windows ISOs using standard enums (`WindowsVersion.WIN10_22H2`, `WindowsVersion.WIN11_25H2`).
   - Fully automated installation via generated `autounattend.xml` and driver injection bypassing OOBE and hardware checks.
+  - Windows XP (SP1/SP2/SP3) legacy provisioning from stock ISOs via `winnt.sif` answer-file floppy (`Image.from_xp_iso`).
 - 🌐 **Virtual Networking, Hotplugging & Switches (`machine.network`, `VirtualSwitch`)**:
   - Hotplug and remove NICs on running VMs with custom hardware models (`NICModel.E1000E`, `NICModel.VIRTIO_NET_PCI`, `NICModel.RTL8139`, etc.).
   - Configure static IP, subnet masks, default gateway, and DNS servers inside Windows over QGA.
@@ -118,6 +119,47 @@ with machine.file.share(from="./my_project", to="Z:") as share:
 # 8. Clean shutdown
 machine.power.off()
 ```
+
+---
+
+## 🗿 Windows XP (NT 5.1) Legacy Provisioning
+
+Hands-free provisioning for Windows XP Service Pack 1/2/3 using the **stock, untouched XP CDs**. XP is provisioned through its classic `WINNT.SIF` answer-file flow (a 1.44MB FAT12 unattend floppy built in-memory by the library — no modified ISOs), running on the legacy i440fx machine profile (PIIX3 IDE, `RTL8139`, `ES1370` — all inbox XP drivers) in a two-phase unattended install:
+
+```python
+from windows import Image, WindowsVersion
+
+# Fully unattended XP install: kernel boots both setup phases with -no-reboot chaining
+image = Image.from_xp_iso(
+    WindowsVersion.XP_SP1,       # or WindowsVersion.XP_SP2 / XP_SP3 / local ISO path
+    output_disk="winxp.qcow2",
+    disk_size="20G",
+    ram_mb=1024,
+    product_key="XXXXX-XXXXX-XXXXX-XXXXX-XXXXX",  # optional (defaults to the public SP1 EN retail key)
+    username="Administrator",
+    password="Password123!",
+    computer_name="WINXP-VM",
+)
+
+from windows import Machine
+
+# XP VMs must run on the legacy `pc` machine type (q35's AHCI BSODs with 0x7B on XP)
+machine = Machine(
+    image,
+    ram_mb=1024,
+    cpus=2,
+    machine_type="pc",   # i440fx / PIIX3 IDE
+    sound_device="es1370",
+    nic_model="rtl8139",
+    headless=True,
+)
+machine.power.on()
+machine.screenshot("winxp.png")   # VNC console available at 127.0.0.1:<port>
+```
+
+> **Note:** The QEMU Guest Agent must be installed manually inside XP (32-bit `qemu-ga-i386.msi` from older virtio-win releases) for QGA-backed subsystems (`machine.command`, `machine.file`, ...). Without it, drive the VM over VNC / QEMU monitor / GDB stub (`machine.debug()`).
+>
+> **Answer file quirks handled for you:** XP GUI setup refuses the reserved account names `'Administrator'`/`'Guest'` as the registered owner name (`FullName` in `WINNT.SIF`) and stalls setup with an interactive error box. `windows.unattend.render_winnt_sif()` silently falls back to `"Windows XP User"` (or pass an explicit `full_name="..."`), keeping the install fully unattended.
 
 ---
 

@@ -158,6 +158,8 @@ class Machine:
         password: str = DEFAULT_PASSWORD,
         enable_kvm: bool = True,
         ttd: bool = False,
+        machine_type: str | None = None,
+        nic_model: str | None = None,
         default_user: str | None = None,
         default_password: str | None = None,
         usb_drives: list[str | Path] | None = None,
@@ -166,10 +168,15 @@ class Machine:
         cdrom: str | Path | None = None,
         enable_audio: bool = True,
         sound_device: str | None = "intel-hda",
+        cache: str | None = None,
+        enable_network: bool = True,
+        enable_usb: bool = True,
     ):
         if not isinstance(image, Image):
             image = Image(image)
         self.image = image
+        self.enable_network = enable_network
+        self.enable_usb = enable_usb
         self.ram_mb = ram_mb
         if ttd:
             self.cpus = 1
@@ -180,6 +187,8 @@ class Machine:
             self.enable_kvm = enable_kvm
             self.ram_mb = ram_mb
         self.ttd_mode = ttd
+        self.machine_type = (machine_type or "q35").lower()
+        self.nic_model = nic_model or ("rtl8139" if self.machine_type == "pc" else "e1000")
         self.headless = headless
         self.default_user = default_user or username or DEFAULT_USERNAME
         self.default_password = default_password or password or DEFAULT_PASSWORD
@@ -250,6 +259,7 @@ class Machine:
         self._initial_cd = Path(raw_cd) if raw_cd is not None else None
         self.enable_audio = enable_audio
         self.sound_device = sound_device
+        self.cache = cache or ("unsafe" if sys.platform == "win32" else None)
 
         cmd = build_run_qemu_cmd(
             disk_path=image.disk_path,
@@ -267,6 +277,11 @@ class Machine:
             cdrom_iso=self._initial_cd,
             enable_audio=self.enable_audio,
             sound_device=self.sound_device,
+            cache=self.cache,
+            enable_network=self.enable_network,
+            enable_usb=self.enable_usb,
+            machine_type=self.machine_type,
+            nic_model=self.nic_model,
         )
         self._process_manager = QEMUProcessManager(cmd)
 
@@ -467,6 +482,7 @@ class Machine:
             gdb_port=actual_gdb_port,
             stop_at_boot=pause_at_boot,
             smb_guestfwd_port=getattr(self, "smb_port", None),
+            machine_type=self.machine_type,
         )
         self._process_manager = QEMUProcessManager(cmd)
         self.power._manager = self._process_manager
@@ -551,6 +567,10 @@ class Machine:
     def is_running(self) -> bool:
         """Return True if the machine power status is 'running'."""
         return self.power.status == "running"
+
+    def screenshot(self, output_path: str | Path = "screenshot.png") -> Path:
+        """Capture a live screenshot of the VM's active display screen and save as PNG."""
+        return self.console.screenshot(output_path)
 
     def close(self) -> None:
         """Clean up machine resources and release reserved ports."""

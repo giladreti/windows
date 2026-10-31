@@ -25,12 +25,18 @@ from windows.iso import (
 from windows.qemu import (
     QEMUProcessManager,
     build_install_qemu_cmd,
+    build_xp_install_qemu_cmd,
     create_qcow2_disk,
     create_qcow2_overlay,
     find_free_port,
 )
 from windows.unattend import (
+    DEFAULT_PASSWORD,
+    DEFAULT_USERNAME,
+    DEFAULT_XP_PRODUCT_KEY,
+    XP_DEFAULT_COMPUTER_NAME,
     create_unattend_iso,
+    create_xp_unattend_floppy,
     save_unattend_xml,
 )
 
@@ -189,17 +195,20 @@ class Image:
         *,
         base_image: "Image | str | Path | os.PathLike | None" = None,
         overlay_path: "Image | str | Path | os.PathLike | None" = None,
+        size: str | None = None,
     ) -> "Image":
         """Create a thin qcow2 overlay backed by a base Windows disk image.
 
         The overlay only stores writes/diffs on top of the base image (~200KB initial size),
         enabling instant reuse and branching of base images without copying.
+        Optionally, a custom virtual size (e.g. '60G') can be specified to expand disk capacity.
 
         Args:
             base: An existing Image instance, str, Path, or os.PathLike pointing to a base qcow2 image.
             output_disk: Path for the new overlay disk image. If None, generates a unique random name.
             base_image: Alias for base.
             overlay_path: Alias for output_disk.
+            size: Optional expanded virtual size for the overlay (e.g. '60G').
 
         Returns:
             An Image instance referencing the newly created overlay disk.
@@ -239,7 +248,7 @@ class Image:
         if target == base_path:
             raise ValueError("Overlay path cannot be the same as the base image path.")
 
-        create_qcow2_overlay(target, base_path)
+        create_qcow2_overlay(target, base_path, size=size)
         return cls(target)
 
     def create_overlay(
@@ -247,18 +256,20 @@ class Image:
         output_disk: "Image | str | Path | os.PathLike | None" = None,
         *,
         overlay_path: "Image | str | Path | os.PathLike | None" = None,
+        size: str | None = None,
     ) -> "Image":
         """Create a thin qcow2 overlay backed by this base image."""
-        return self.from_base(self, output_disk=output_disk, overlay_path=overlay_path)
+        return self.from_base(self, output_disk=output_disk, overlay_path=overlay_path, size=size)
 
     def overlay(
         self,
         output_disk: "Image | str | Path | os.PathLike | None" = None,
         *,
         overlay_path: "Image | str | Path | os.PathLike | None" = None,
+        size: str | None = None,
     ) -> "Image":
         """Alias for create_overlay()."""
-        return self.create_overlay(output_disk=output_disk, overlay_path=overlay_path)
+        return self.create_overlay(output_disk=output_disk, overlay_path=overlay_path, size=size)
 
     @classmethod
     def from_iso(
@@ -322,6 +333,25 @@ class Image:
         if not iso_path.exists():
             raise FileNotFoundError(f"ISO file does not exist: {iso_path}")
 
+        # Route legacy Windows XP media (NT 5.1) to the XP provisioning flow,
+        # which uses i440fx/IDE + winnt.sif instead of q35 + autounattend.xml.
+        from windows.iso import WindowsVersion
+
+        if WindowsVersion.is_xp(iso) or _looks_like_xp_iso(Path(iso_path)):
+            return cls.from_xp_iso(
+                Path(iso_path),
+                output_disk=output_disk,
+                disk_size=disk_size,
+                ram_mb=ram_mb,
+                cpus=cpus,
+                enable_kvm=enable_kvm,
+                headless=headless,
+                vnc_display=vnc_display,
+                timeout_minutes=timeout_minutes,
+                interactive=interactive,
+                use_cache=use_cache,
+            )
+
         if output_disk is None:
             random_suffix = uuid.uuid4().hex[:8]
             output_disk = Path(f"windows_overlay_{random_suffix}.qcow2")
@@ -335,7 +365,10 @@ class Image:
             print(f"[windows] Reusing cached installed Windows base image: {cached_image_path}")
             output_disk.parent.mkdir(parents=True, exist_ok=True)
             if output_disk != cached_image_path:
-                create_qcow2_overlay(output_disk, cached_image_path)
+                if disk_size and disk_size != "50G":
+                    create_qcow2_overlay(output_disk, cached_image_path, size=disk_size)
+                else:
+                    create_qcow2_overlay(output_disk, cached_image_path)
                 print(f"[windows] Created QEMU overlay disk {output_disk} backing {cached_image_path}")
             return cls(output_disk)
 
@@ -471,6 +504,187 @@ class Image:
         # 3. Create thin QEMU overlay disk backing the cached base image if applicable
         if use_cache and _is_valid_installed_image(cached_image_path):
             if output_disk != cached_image_path:
+                if disk_size and disk_size != "50G":
+                    create_qcow2_overlay(output_disk, cached_image_path, size=disk_size)
+                else:
+                    create_qcow2_overlay(output_disk, cached_image_path)
+                print(f"[windows] Created QEMU overlay disk {output_disk} backing {cached_image_path}")
+
+        return cls(output_disk)
+
+    @classmethod
+    def from_xp_iso(
+        cls,
+        iso: "ISO | str | Path | WindowsVersion",
+        output_disk: str | Path | None = None,
+        disk_size: str = "20G",
+        ram_mb: int = 1024,
+        cpus: int = 2,
+        enable_kvm: bool = True,
+        headless: bool = True,
+        vnc_display: int | None = None,
+        username: str = DEFAULT_USERNAME,
+        password: str = DEFAULT_PASSWORD,
+        product_key: str = DEFAULT_XP_PRODUCT_KEY,
+        computer_name: str = XP_DEFAULT_COMPUTER_NAME,
+        full_name: str | None = None,
+        time_zone: str = "UTC",
+        workgroup: str = "WORKGROUP",
+        timeout_minutes: int = 90,
+        interactive: bool = False,
+        use_cache: bool = True,
+    ) -> "Image":
+        """Provision a fully unattended Windows XP (NT 5.1) VM disk image from a stock XP ISO.
+
+        The untouched (plain) XP install CD is used as-is: setup is fed via a
+        legacy FAT12 floppy image containing `WINNT.SIF`
+        (windows.unattend.create_xp_unattend_floppy). XP's cdboot polls
+        ``A:\\WINNT.SIF`` on start, so both the text-mode and GUI setup phases run
+        without any interaction.
+
+        Because XP has no inbox AHCI driver, the media runs on the legacy i440fx
+        (``pc``) machine type with PIIX3 IDE storage instead of the q35 profile.
+        The multi-reboot installer runs as two QEMU phases (CD-boot text-mode ->
+        disk-boot GUI setup), each with ``-no-reboot`` so QEMU exits exactly when
+        the guest reboots between phases.
+
+        Args:
+            iso: An ISO instance, WindowsVersion.XP_* enum, XP alias string
+                ("xp", "xp_sp3", "winxp", ...), or path to a local XP ISO file.
+            output_disk: Path for the output qcow2 disk image. If None, generates a unique random name.
+            disk_size: Target disk size (e.g. "20G").
+            ram_mb: VM RAM in megabytes (XP sweet spot: 512-2048).
+            cpus: Number of vCPUs.
+            enable_kvm: Enable KVM acceleration if supported.
+            headless: Run headless without graphical window (VNC always on).
+            vnc_display: Custom VNC display index (e.g. 0 -> port 5900).
+            username: Legacy account name for FullName/answer file.
+            password: Administrator account password (AdminPassword).
+            product_key: 25-char XP product key (dashes optional). Defaults to the
+                retail EN key published for the XP SP1 MSDN media.
+            computer_name: XP computer name (max 15 chars).
+            full_name: Setup "Full Name" (defaults to username).
+            time_zone: XP time zone index will be inferred (e.g. "UTC", "Europe/Jerusalem", "America/New_York").
+            workgroup: Workgroup name to join.
+            timeout_minutes: Installation timeout in minutes (total for both phases).
+            interactive: If True, opens a VNC viewer console window per phase.
+            use_cache: If True, uses cached pre-installed XP images and creates a thin overlay.
+
+        Example:
+            image = Image.from_xp_iso(WindowsVersion.XP_SP1)
+        """
+        from windows.iso import ISO, resolve_iso
+
+        if isinstance(iso, ISO):
+            iso_path = iso.path
+        elif isinstance(iso, Path):
+            iso_path = iso.resolve()
+            if not iso_path.exists():
+                raise FileNotFoundError(f"ISO file does not exist: {iso_path}")
+        elif isinstance(iso, str) and Path(iso).exists() and Path(iso).is_file():
+            iso_path = Path(iso).resolve()
+        else:
+            iso_path = resolve_iso(iso)
+
+        if not iso_path.exists():
+            raise FileNotFoundError(f"ISO file does not exist: {iso_path}")
+
+        if output_disk is None:
+            random_suffix = uuid.uuid4().hex[:8]
+            output_disk = Path(f"windows_overlay_{random_suffix}.qcow2")
+        else:
+            output_disk = Path(output_disk)
+        output_disk = output_disk.resolve()
+        cached_image_path = _get_installed_image_cache_path(iso_path)
+
+        # 1. Reuse a cached XP base image when available
+        if use_cache and _is_valid_installed_image(cached_image_path):
+            print(f"[windows] Reusing cached installed Windows XP base image: {cached_image_path}")
+            output_disk.parent.mkdir(parents=True, exist_ok=True)
+            if output_disk != cached_image_path:
+                create_qcow2_overlay(output_disk, cached_image_path)
+                print(f"[windows] Created QEMU overlay disk {output_disk} backing {cached_image_path}")
+            return cls(output_disk)
+
+        install_target = cached_image_path if use_cache else output_disk
+        create_qcow2_disk(install_target, size=disk_size)
+
+        with tempfile.TemporaryDirectory(prefix="windows_xp_unattend_") as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            floppy_path = create_xp_unattend_floppy(
+                tmp_path / "unattend_floppy.img",
+                product_key=product_key,
+                username=username,
+                password=password,
+                computer_name=computer_name,
+                full_name=full_name,
+                time_zone=time_zone,
+                workgroup=workgroup,
+            )
+            serial_log_path = tmp_path / "xp_install_serial.log"
+            monitor_socket_path = tmp_path / "xp_monitor.sock"
+
+            phases = [
+                ("d", "Text-mode setup (partition + file copy)"),
+                ("c", "GUI setup (automated first boot)"),
+            ]
+            total_seconds = timeout_minutes * 60
+
+            with tqdm(
+                total=len(phases),
+                desc=f"Installing Windows XP from {Path(iso_path).name}",
+                unit="phase",
+            ) as pbar:
+                for boot_letter, phase_label in phases:
+                    pbar.set_postfix_str(phase_label)
+
+                    port = vnc_display if vnc_display is not None else find_free_port(5900)
+                    actual_vnc_display = port - 5900
+
+                    cmd = build_xp_install_qemu_cmd(
+                        disk_path=install_target,
+                        iso_path=iso_path,
+                        unattend_floppy_path=floppy_path,
+                        ram_mb=ram_mb,
+                        cpus=cpus,
+                        enable_kvm=enable_kvm,
+                        headless=headless,
+                        vnc_display=actual_vnc_display,
+                        serial_log_path=serial_log_path,
+                        monitor_socket_path=monitor_socket_path,
+                        boot_from=boot_letter,
+                        no_reboot=True,
+                    )
+                    console_ctrl = ConsoleController(host="127.0.0.1", port=port, display_index=actual_vnc_display)
+                    manager = QEMUProcessManager(cmd)
+                    manager.start()
+
+                    if interactive:
+                        print(f"[windows] Opening VNC viewer ({console_ctrl.info.vnc_url}) -> {phase_label}...")
+                        console_ctrl.open()
+
+                    try:
+                        if boot_letter == "d":
+                            # Consume the 'Press any key to boot from CD' prompt
+                            manager.send_boot_keypress(monitor_socket_path)
+
+                        deadline = time.time() + total_seconds / len(phases)
+                        while manager.is_running():
+                            if time.time() > deadline:
+                                raise RuntimeError(
+                                    f"Windows XP setup phase '{phase_label}' timed out after "
+                                    f"{total_seconds // len(phases)}s. Re-run with interactive=True "
+                                    "and inspect the VNC screen."
+                                )
+                            time.sleep(5)
+                    finally:
+                        if interactive:
+                            console_ctrl.close()
+                        manager.stop()
+                    pbar.update(1)
+
+        if use_cache and _is_valid_installed_image(cached_image_path):
+            if output_disk != cached_image_path:
                 create_qcow2_overlay(output_disk, cached_image_path)
                 print(f"[windows] Created QEMU overlay disk {output_disk} backing {cached_image_path}")
 
@@ -485,6 +699,18 @@ class Image:
 def _is_valid_installed_image(path: Path) -> bool:
     """Return True if path exists and contains a valid non-empty disk image."""
     return path.exists() and path.is_file() and path.stat().st_size > 0
+
+
+def _looks_like_xp_iso(iso_path: Path) -> bool:
+    """Heuristically detect Windows XP install media from a local ISO filename.
+
+    Matches tokens like 'win_xp_sp1' / 'wxpvol_en' / 'WindowsXP...' in the ISO stem.
+    """
+    name = iso_path.name.replace("_", " ").replace("-", " ").lower()
+    tokens = name.split()
+    return "xp" in tokens or any(
+        token.startswith("wxp") or token.startswith("winxp") or token == "windowsxp" for token in tokens
+    )
 
 
 def _get_installed_image_cache_path(iso_path: str | Path) -> Path:
