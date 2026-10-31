@@ -35,6 +35,7 @@ class MockQGAServer:
         self.active = True
         self.files: dict[int, bytearray] = {}
         self.next_handle = 100
+        self.exec_status_error: dict[str, str] | None = None
 
     def start(self):
         self.thread.start()
@@ -76,15 +77,18 @@ class MockQGAServer:
                             elif cmd == "guest-exec":
                                 conn.sendall(json.dumps({"return": {"pid": 42}}).encode("utf-8") + b"\n")
                             elif cmd == "guest-exec-status":
-                                resp = {
-                                    "return": {
-                                        "exited": True,
-                                        "exitcode": 0,
-                                        "out-data": base64.b64encode(b"MOCK_QGA_STDOUT").decode("utf-8"),
-                                        "err-data": "",
+                                if self.exec_status_error:
+                                    conn.sendall(json.dumps({"error": self.exec_status_error}).encode("utf-8") + b"\n")
+                                else:
+                                    resp = {
+                                        "return": {
+                                            "exited": True,
+                                            "exitcode": 0,
+                                            "out-data": base64.b64encode(b"MOCK_QGA_STDOUT").decode("utf-8"),
+                                            "err-data": "",
+                                        }
                                     }
-                                }
-                                conn.sendall(json.dumps(resp).encode("utf-8") + b"\n")
+                                    conn.sendall(json.dumps(resp).encode("utf-8") + b"\n")
                             elif cmd == "guest-file-open":
                                 h = self.next_handle
                                 self.next_handle += 1
@@ -174,5 +178,19 @@ def test_qga_client_tcp():
         assert code == 0
         data = client.read_file(r"C:\tcp_test.txt")
         assert data == b"MOCK_FILE_CONTENT"
+    finally:
+        server.stop()
+
+
+def test_qga_client_exec_pid_does_not_exist(tmp_path):
+    """Test that QGAClient.exec immediately raises QGAError when PID does not exist."""
+    sock_path = tmp_path / "test_qga_pid_error.sock"
+    server = MockQGAServer(sock_path)
+    server.exec_status_error = {"class": "GenericError", "desc": "PID 9999 does not exist"}
+    server.start()
+    try:
+        client = QGAClient(server.endpoint)
+        with pytest.raises(QGAError, match="no longer exists"):
+            client.exec("hostname", timeout=5)
     finally:
         server.stop()

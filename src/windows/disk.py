@@ -830,9 +830,9 @@ class DiskController:
 
         proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
 
-        start = time.time()
+        start = time.monotonic()
         mounted = False
-        while time.time() - start < 5.0:
+        while time.monotonic() - start < 5.0:
             if proc.poll() is not None:
                 _, stderr = proc.communicate()
                 mount_file.unlink(missing_ok=True)

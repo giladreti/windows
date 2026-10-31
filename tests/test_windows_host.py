@@ -38,13 +38,13 @@ def test_tcp_endpoint_helpers():
 def test_format_chardev_and_socket_args():
     # TCP endpoint formatting
     args = format_chardev_args("qga0", ("127.0.0.1", 5950))
-    assert args == ["-chardev", "socket,id=qga0,host=127.0.0.1,port=5950,server=on,wait=off"]
+    assert args == ["-chardev", "socket,id=qga0,host=127.0.0.1,port=5950,server=on,wait=off,nodelay=on"]
 
     args = format_monitor_args(("127.0.0.1", 5960))
-    assert args == ["-monitor", "tcp:127.0.0.1:5960,server,nowait"]
+    assert args == ["-monitor", "tcp:127.0.0.1:5960,server,nowait,nodelay=on"]
 
     args = format_qmp_args(("127.0.0.1", 5970))
-    assert args == ["-qmp", "tcp:127.0.0.1:5970,server,nowait"]
+    assert args == ["-qmp", "tcp:127.0.0.1:5970,server,nowait,nodelay=on"]
 
     # Unix domain socket formatting
     sock_path = Path("/tmp/qga.sock")
@@ -96,7 +96,7 @@ def test_build_run_qemu_cmd_windows_whpx():
         assert cmd[accel_idx + 1] == "whpx"
         assert "-cpu" in cmd
         cpu_idx = cmd.index("-cpu")
-        assert cmd[cpu_idx + 1] == "max"
+        assert cmd[cpu_idx + 1] == "host"
 
         # Check TCP endpoints
         cmd_str = " ".join(cmd)

@@ -245,17 +245,21 @@ class CommandController:
 
     def wait_until_ready(self, timeout: int = 120, interval: float = 2.0) -> bool:
         """Poll QEMU Guest Agent until it is responsive and accepting commands."""
-        start_time = time.time()
-        while time.time() - start_time < timeout:
+        start_time = time.monotonic()
+        while time.monotonic() - start_time < timeout:
             should_ping = True
             if isinstance(self.qga_socket_path, Path) and not self.qga_socket_path.exists():
                 should_ping = False
             if should_ping:
                 try:
                     if self.qga.ping(timeout=2.0):
+                        try:
+                            self.qga.sync(timeout=5.0)
+                        except Exception:
+                            pass
                         return True
                 except Exception:
-                    pass
+                    self.qga.close()
             time.sleep(interval)
         return False
 
@@ -318,7 +322,7 @@ class CommandController:
                             f"Password must be provided when executing commands as user '{effective_user}'."
                         )
 
-        start_time = time.time()
+        start_time = time.monotonic()
         last_exception = None
 
         while True:
@@ -356,7 +360,7 @@ class CommandController:
                 last_exception = exc
                 self.qga.close()
 
-            if not auto_retry or (time.time() - start_time) >= timeout:
+            if not auto_retry or (time.monotonic() - start_time) >= timeout:
                 if last_exception:
                     raise last_exception
                 raise QGAError(f"Command execution failed on {self.qga_socket_path}")

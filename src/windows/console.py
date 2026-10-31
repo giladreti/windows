@@ -316,8 +316,13 @@ class ConsoleController:
                     s.recv(1024)
                 except Exception:
                     pass
-                s.sendall(f"screendump {ppm_path}\n".encode())
-                time.sleep(0.05)
+                s.sendall(f'screendump "{ppm_path.as_posix()}"\n'.encode())
+                start = time.monotonic()
+                while time.monotonic() - start < 3.0:
+                    if ppm_path.exists() and ppm_path.stat().st_size > 0:
+                        time.sleep(0.05)  # brief pause for final flush
+                        break
+                    time.sleep(0.1)
 
     def screenshot(self, output_path: str | Path = "screenshot.png") -> Path:
         """Capture a live screenshot of the VM's active display screen and save as PNG."""
@@ -390,9 +395,9 @@ class ConsoleController:
                 s.sendall(cmd.encode("utf-8"))
 
                 chunks: list[bytes] = []
-                start_time = time.time()
+                start_time = time.monotonic()
                 s.settimeout(0.2)
-                while time.time() - start_time < timeout:
+                while time.monotonic() - start_time < timeout:
                     try:
                         chunk = s.recv(4096)
                         if not chunk:
@@ -461,8 +466,8 @@ class ConsoleController:
 
     def _wait_for_vnc_port(self, timeout: float = 5.0) -> bool:
         """Wait until the VNC port is open and accepting TCP connections."""
-        start_time = time.time()
-        while time.time() - start_time < timeout:
+        start_time = time.monotonic()
+        while time.monotonic() - start_time < timeout:
             try:
                 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                     s.settimeout(0.5)

@@ -76,9 +76,9 @@ class QGAClient:
             s.settimeout(timeout)
             s.sendall(payload)
 
-            start = time.time()
+            start = time.monotonic()
             raw = bytearray()
-            while time.time() - start < timeout:
+            while time.monotonic() - start < timeout:
                 try:
                     chunk = s.recv(4096)
                 except TimeoutError:
@@ -86,20 +86,26 @@ class QGAClient:
                 if not chunk:
                     break
                 raw.extend(chunk)
-                if b"\xff" in raw:
+                while b"\xff" in raw:
                     idx = raw.find(b"\xff")
                     after = raw[idx + 1 :]
-                    if b"\n" in after:
-                        line = after.split(b"\n")[0].decode("utf-8", errors="replace").strip()
-                        try:
-                            resp = json.loads(line)
-                            if resp.get("return") == sync_id:
-                                leftover = after.split(b"\n", 1)[1]
-                                self._read_buffer = leftover.decode("utf-8", errors="replace")
-                                return True
-                        except json.JSONDecodeError:
-                            pass
-            return self.ping(timeout=timeout)
+                    if b"\n" not in after:
+                        break
+                    line, remainder = after.split(b"\n", 1)
+                    raw = bytearray(remainder)
+                    line_str = line.decode("utf-8", errors="replace").strip()
+                    try:
+                        resp = json.loads(line_str)
+                        if resp.get("return") == sync_id:
+                            self._read_buffer = remainder.decode("utf-8", errors="replace")
+                            return True
+                    except json.JSONDecodeError:
+                        pass
+            self.close()
+            return False
+        except TimeoutError:
+            self.close()
+            return False
         except Exception:
             self.close()
             return False
@@ -113,14 +119,15 @@ class QGAClient:
         req_bytes = json.dumps(payload).encode("utf-8") + b"\n"
 
         last_exc: Exception | None = None
-        for attempt in range(2):
+        max_attempts = 1 if cmd == "guest-ping" else 2
+        for attempt in range(max_attempts):
             try:
                 s = self._connect(timeout=min(timeout, 30.0))
                 s.settimeout(timeout)
                 s.sendall(req_bytes)
 
-                start_time = time.time()
-                while time.time() - start_time < timeout:
+                start_time = time.monotonic()
+                while time.monotonic() - start_time < timeout:
                     if "\n" in self._read_buffer:
                         line, self._read_buffer = self._read_buffer.split("\n", 1)
                         line = line.strip()
@@ -137,24 +144,29 @@ class QGAClient:
                         except json.JSONDecodeError:
                             continue
 
-                    remaining = max(1.0, timeout - (time.time() - start_time))
+                    remaining = max(1.0, timeout - (time.monotonic() - start_time))
                     s.settimeout(remaining)
                     try:
                         chunk = s.recv(4096).decode("utf-8", errors="replace")
                     except TimeoutError as exc:
-                        raise QGAError(f"Timed out waiting for response from QGA socket for command {cmd}") from exc
+                        raise TimeoutError(f"Timed out waiting for response from QGA socket for command {cmd}") from exc
 
                     if not chunk:
                         raise QGAError("QGA socket closed by remote end")
 
                     self._read_buffer += chunk
 
-                raise QGAError(f"Timed out waiting for response from QGA socket for command {cmd}")
+                raise TimeoutError(f"Timed out waiting for response from QGA socket for command {cmd}")
 
+            except TimeoutError as exc:
+                last_exc = exc
+                self.close()
+                if attempt == max_attempts - 1:
+                    raise exc
             except (QGAError, OSError) as exc:
                 last_exc = exc
                 self.close()
-                if attempt == 1:
+                if attempt == max_attempts - 1:
                     raise exc
             except BaseException:
                 self.close()
@@ -206,14 +218,22 @@ class QGAClient:
             raise QGAError(f"QGA guest-exec failed to return a PID: {spawn_resp}")
 
         # 2. Poll guest-exec-status until process exits
-        start_time = time.time()
-        while time.time() - start_time < timeout:
+        start_time = time.monotonic()
+        while time.monotonic() - start_time < timeout:
             try:
                 status_resp = self._send_command(
                     "guest-exec-status",
                     args={"pid": pid},
-                    timeout=min(15.0, max(5.0, timeout - (time.time() - start_time))),
+                    timeout=min(15.0, max(5.0, timeout - (time.monotonic() - start_time))),
                 )
+            except QGAError as exc:
+                err_str = str(exc)
+                if any(k in err_str.lower() for k in ("does not exist", "invalid parameter", "not found")):
+                    raise QGAError(
+                        f"Guest process PID {pid} no longer exists (process terminated or guest rebooted): {exc}"
+                    ) from exc
+                time.sleep(0.5)
+                continue
             except Exception:
                 time.sleep(0.5)
                 continue

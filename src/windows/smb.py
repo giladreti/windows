@@ -101,6 +101,68 @@ class SMBServerManager:
 
                     inner_server.get_request = hooked_get_request
 
+                    # Optimize SMB2 performance (multi-credit, 1MB buffers, zero-latency flush)
+                    from impacket.smbserver import smb2
+
+                    orig_smb2_commands = getattr(inner_server, "_SMBSERVER__smb2Commands", {})
+                    orig_negotiate = orig_smb2_commands.get(smb2.SMB2_NEGOTIATE)
+                    if orig_negotiate is not None:
+
+                        def fast_negotiate(connId, smbServer, recvPacket, isSMB1=False, orig=orig_negotiate):
+                            respCommands, respPackets, errorCode = orig(connId, smbServer, recvPacket, isSMB1)
+                            for p in respPackets or []:
+                                try:
+                                    p["CreditRequestResponse"] = 64
+                                    cmd = p["Data"]
+                                    if isinstance(cmd, smb2.SMB2Negotiate_Response):
+                                        cmd["MaxReadSize"] = 1048576
+                                        cmd["MaxWriteSize"] = 1048576
+                                        cmd["MaxTransactSize"] = 1048576
+                                except Exception:
+                                    pass
+                            return respCommands, respPackets, errorCode
+
+                        inner_server.hookSmb2Command(smb2.SMB2_NEGOTIATE, fast_negotiate)
+
+                    def fast_flush(connId, smbServer, recvPacket):
+                        resp = smb2.SMB2Flush_Response()
+                        return [resp], None, 0
+
+                    inner_server.hookSmb2Command(smb2.SMB2_FLUSH, fast_flush)
+
+                    # Extend SMBSERVERHandler timeout from 5 minutes to 1 hour to prevent idle connection drops
+                    from impacket import smbserver
+
+                    smbserver_mod: Any = smbserver
+                    orig_handler_init = getattr(smbserver_mod, "_orig_SMBSERVERHandler_init", None)
+                    if orig_handler_init is None:
+                        orig_handler_init = smbserver.SMBSERVERHandler.__init__
+                        smbserver_mod._orig_SMBSERVERHandler_init = orig_handler_init
+
+                    def safe_handler_init(
+                        self: Any, request: Any, client_address: Any, server: Any, select_poll: bool = False
+                    ) -> None:
+                        orig_handler_init(self, request, client_address, server, select_poll=select_poll)
+                        self._SMBSERVERHandler__timeOut = 3600
+
+                    handler_cls: Any = smbserver.SMBSERVERHandler
+                    handler_cls.__init__ = safe_handler_init
+
+                    orig_handler_handle = getattr(smbserver_mod, "_orig_SMBSERVERHandler_handle", None)
+                    if orig_handler_handle is None:
+                        orig_handler_handle = smbserver.SMBSERVERHandler.handle
+                        smbserver_mod._orig_SMBSERVERHandler_handle = orig_handler_handle
+
+                    def safe_handler_handle(self: Any) -> None:
+                        # Set 24-hour timeout directly on instance before handle loop begins to prevent idle drops
+                        self._SMBSERVERHandler__timeOut = 86400
+                        try:
+                            orig_handler_handle(self)
+                        except Exception:
+                            pass
+
+                    handler_cls.handle = safe_handler_handle
+
                 # Wrap pipe servers to silently catch OSError when unblocked on shutdown
                 for attr in ("_SimpleSMBServer__srvsServer", "_SimpleSMBServer__wkstServer"):
                     pipe_server = getattr(server, attr, None)
@@ -136,8 +198,8 @@ class SMBServerManager:
                 atexit.register(self.stop)
 
                 # Wait for port to open and accept connections
-                start_t = time.time()
-                while time.time() - start_t < 5.0:
+                start_t = time.monotonic()
+                while time.monotonic() - start_t < 5.0:
                     try:
                         with socket.create_connection((self.host, self.port), timeout=0.5):
                             break
